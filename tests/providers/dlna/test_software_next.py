@@ -87,7 +87,7 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
         call("Play", InstanceID=0, Speed="1"),
     ]
     play_mock = cast("AsyncMock", player.device.async_play)  # type: ignore[redundant-cast]
-    play_mock.assert_awaited_once()
+    play_mock.assert_not_awaited()
 
 
 @pytest.mark.parametrize("duration", [20, 0])
