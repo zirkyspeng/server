@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections.abc import Coroutine
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 
 import pytest
 from async_upnp_client.profiles.dlna import TransportState
@@ -54,7 +54,7 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
     player.mass.streams.resolve_stream_url = AsyncMock(  # type: ignore[method-assign]
         return_value="http://192.168.1.2/next.flac"
     )
-    player._async_set_transport_uri_fresh = AsyncMock()  # type: ignore[method-assign]
+    player._async_call_avt_fresh = AsyncMock()  # type: ignore[method-assign]
     player.device.async_set_transport_uri = AsyncMock()  # type: ignore[method-assign]
     player.device.async_wait_for_can_play = AsyncMock()  # type: ignore[method-assign]
     player.device.async_play = AsyncMock()  # type: ignore[method-assign]
@@ -75,9 +75,17 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
     )
     set_uri_mock.assert_not_awaited()
     fresh_set_uri_mock = cast(  # type: ignore[redundant-cast]
-        "AsyncMock", player._async_set_transport_uri_fresh
+        "AsyncMock", player._async_call_avt_fresh
     )
-    fresh_set_uri_mock.assert_awaited_once()
+    assert fresh_set_uri_mock.await_args_list == [
+        call(
+            "SetAVTransportURI",
+            InstanceID=0,
+            CurrentURI="http://192.168.1.2/next.flac",
+            CurrentURIMetaData=ANY,
+        ),
+        call("Play", InstanceID=0, Speed="1"),
+    ]
     play_mock = cast("AsyncMock", player.device.async_play)  # type: ignore[redundant-cast]
     play_mock.assert_awaited_once()
 
