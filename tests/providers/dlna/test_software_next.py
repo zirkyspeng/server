@@ -46,6 +46,37 @@ def _player(manufacturer: str, duration: int = 20) -> DLNAPlayer:
     return player
 
 
+async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
+    """An idle renderer must receive the new URI without a blocking Stop first."""
+    player = _player("Marantz")
+    assert player.device is not None
+    player._attr_playback_state = PlaybackState.IDLE
+    player.mass.streams.resolve_stream_url = AsyncMock(  # type: ignore[method-assign]
+        return_value="http://192.168.1.2/next.flac"
+    )
+    player.device.async_set_transport_uri = AsyncMock()  # type: ignore[method-assign]
+    player.device.async_wait_for_can_play = AsyncMock()  # type: ignore[method-assign]
+    player.device.async_play = AsyncMock()  # type: ignore[method-assign]
+    media = PlayerMedia(
+        uri="library://track/next",
+        media_type=MediaType.TRACK,
+        title="Next track",
+        duration=180,
+        queue_item_id="queue-item-next",
+    )
+
+    await player.play_media(media)
+
+    stop_mock = cast("AsyncMock", player.device.async_stop)
+    stop_mock.assert_not_awaited()
+    set_uri_mock = cast(  # type: ignore[redundant-cast]
+        "AsyncMock", player.device.async_set_transport_uri
+    )
+    set_uri_mock.assert_awaited_once()
+    play_mock = cast("AsyncMock", player.device.async_play)  # type: ignore[redundant-cast]
+    play_mock.assert_awaited_once()
+
+
 @pytest.mark.parametrize("duration", [20, 0])
 async def test_marantz_starts_enqueued_media_after_the_current_track_stops(
     duration: int,
