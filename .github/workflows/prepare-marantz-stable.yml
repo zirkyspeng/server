@@ -17,7 +17,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch https://github.com/music-assistant/server.git refs/tags/2.10.1:refs/tags/2.10.1
+          git fetch --no-tags https://github.com/music-assistant/server.git refs/tags/2.10.1:refs/tags/2.10.1
           git checkout -b fix/marantz-dlna-next-duration-stable 2.10.1
           git cherry-pick a919e95 3fdcd9f f86b6e5 14ff09d
+          git rm -r --ignore-unmatch .github/workflows
+          git commit -m "Omit workflow files from test branch"
           git push origin fix/marantz-dlna-next-duration-stable
