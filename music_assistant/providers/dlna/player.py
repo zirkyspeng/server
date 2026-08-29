@@ -6,10 +6,11 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Concatenate
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError
 
-import aiohttp
 import defusedxml.ElementTree as DefusedET
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
@@ -258,11 +259,17 @@ class DLNAPlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
         try:
             if self._uses_software_next():
-                await self._async_set_transport_uri_fresh(url, didl_metadata)
+                await self._async_call_avt_fresh(
+                    "SetAVTransportURI",
+                    InstanceID=0,
+                    CurrentURI=url,
+                    CurrentURIMetaData=didl_metadata,
+                )
+                await self._async_call_avt_fresh("Play", InstanceID=0, Speed="1")
             else:
                 await self.device.async_set_transport_uri(url, title, didl_metadata)
-            await self.device.async_wait_for_can_play(10)
-            await self.device.async_play()
+                await self.device.async_wait_for_can_play(10)
+                await self.device.async_play()
         except Exception:
             self._attr_playback_state = prev_state
             raise
@@ -634,36 +641,44 @@ class DLNAPlayer(Player):
 
         return None
 
-    async def _async_set_transport_uri_fresh(self, url: str, didl_metadata: str) -> None:
-        """Set the transport URI on a fresh HTTP connection."""
+    async def _async_call_avt_fresh(self, action_name: str, **kwargs: Any) -> None:
+        """Call a Marantz AVTransport action on a fresh HTTP connection."""
         assert self.device is not None  # for type checking
-        action = self.device._action("AVT", "SetAVTransportURI")
+        action = self.device._action("AVT", action_name)
         if action is None:
-            raise UpnpError("Missing action AVT/SetAVTransportURI")
-        request = action.create_request(
-            InstanceID=0,
-            CurrentURI=url,
-            CurrentURIMetaData=didl_metadata,
-        )
+            raise UpnpError(f"Missing action AVT/{action_name}")
+        request = action.create_request(**kwargs)
+
         # Some Marantz renderers leave a reused keep-alive connection pending
         # even though the same SOAP request succeeds immediately on a new one.
-        timeout = aiohttp.ClientTimeout(total=8)
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.request(
-            request.method,
-            request.url,
-            headers=request.headers,
-            data=request.body,
-        ) as response:
-            response_body = await response.read()
-            if response.status != 200:
-                raise UpnpResponseError(
-                    status=response.status,
-                    headers=response.headers,
-                    message=(
-                        "Error setting Marantz transport URI: "
-                        f"status={response.status}, body={response_body[:300]!r}"
-                    ),
-                )
+        if urlparse(request.url).scheme != "http":
+            raise UpnpError(f"Unsupported Marantz AVT URL: {request.url}")
+
+        def _send_request() -> tuple[int, Any, bytes]:
+            http_request = Request(  # noqa: S310
+                request.url,
+                data=(request.body or "").encode(),
+                headers={**request.headers, "Connection": "close"},
+                method=request.method,
+            )
+            try:
+                with urlopen(http_request, timeout=5) as response:  # noqa: S310
+                    return response.status, response.headers, response.read()
+            except HTTPError as err:
+                return err.code, err.headers, err.read()
+            except URLError as err:
+                raise UpnpError(f"Error calling Marantz AVT/{action_name}: {err}") from err
+
+        status, headers, response_body = await asyncio.to_thread(_send_request)
+        if status != 200:
+            raise UpnpResponseError(
+                status=status,
+                headers=headers,
+                message=(
+                    f"Error calling Marantz AVT/{action_name}: "
+                    f"status={status}, body={response_body[:300]!r}"
+                ),
+            )
 
     def _get_playback_state(self) -> PlaybackState | None:
         """Return current PlaybackState of the player."""
