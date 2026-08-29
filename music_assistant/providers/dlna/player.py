@@ -240,8 +240,10 @@ class DLNAPlayer(Player):
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         assert self.device is not None  # for type checking
-        # always clear queue (by sending stop) first
-        if self.device.can_stop:
+        # Clear active playback first, but do not send Stop to an already-idle
+        # renderer. Some Marantz devices leave Stop advertised as available
+        # while idle and then keep the request pending instead of returning.
+        if self.device.can_stop and self.playback_state != PlaybackState.IDLE:
             await self.stop()
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url)
