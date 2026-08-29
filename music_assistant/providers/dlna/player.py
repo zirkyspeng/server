@@ -257,7 +257,7 @@ class DLNAPlayer(Player):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         try:
-            if self._is_marantz():
+            if self._uses_software_next():
                 await self._async_set_transport_uri_fresh(url, didl_metadata)
             else:
                 await self.device.async_set_transport_uri(url, title, didl_metadata)
