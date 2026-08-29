@@ -27,6 +27,7 @@ def _player(manufacturer: str, duration: int = 20) -> DLNAPlayer:
     device.transport_state = TransportState.PLAYING
     device.async_set_next_transport_uri = AsyncMock()
     device.async_stop = AsyncMock()
+    device._action.return_value = MagicMock()
     player = DLNAPlayer(
         provider,  # type: ignore[arg-type]
         "uuid:dlna-player",
@@ -142,6 +143,45 @@ async def test_marantz_software_next_does_not_override_an_explicit_stop() -> Non
     await asyncio.gather(*tasks)
 
     player.play_media.assert_not_awaited()
+
+
+async def test_marantz_software_next_recovers_when_playing_stalls_at_duration() -> None:
+    """A renderer stuck in PLAYING at EOF must receive the next track immediately."""
+    player = _player("Marantz")
+    player._attr_elapsed_time = 20
+    next_media = PlayerMedia(uri="library://track/next", media_type=MediaType.TRACK)
+    tasks: list[asyncio.Task[Any]] = []
+
+    def _create_task(target: Coroutine[Any, Any, Any], **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(target)
+        tasks.append(task)
+        return task
+
+    player.mass.create_task = _create_task  # type: ignore[assignment]
+    player.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await player.enqueue_next_media(next_media)
+    await asyncio.gather(*tasks)
+
+    player.play_media.assert_awaited_once_with(next_media)
+
+
+async def test_marantz_uses_native_relative_time_seek() -> None:
+    """Marantz seek keeps the original stream and its complete media timeline."""
+    player = _player("Marantz")
+    player._async_call_avt_fresh = AsyncMock()  # type: ignore[method-assign]
+
+    player._set_player_features()
+    await player.seek(61)
+
+    assert PlayerFeature.SEEK in player.supported_features
+    player._async_call_avt_fresh.assert_awaited_once_with(
+        "Seek",
+        InstanceID=0,
+        Unit="REL_TIME",
+        Target="00:01:01",
+    )
+    assert player.elapsed_time == 61
 
 
 def test_marantz_does_not_advertise_gapless_for_software_transitions() -> None:

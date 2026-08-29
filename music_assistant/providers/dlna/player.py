@@ -375,10 +375,24 @@ class DLNAPlayer(Player):
 
     @catch_request_errors
     async def seek(self, position: int) -> None:
-        """Send SEEK command to given player."""
+        """Seek to an absolute position in the current track."""
         assert self.device is not None  # for type checking
-        await self.device.async_seek_rel_time(timedelta(seconds=position))
-        self._schedule_state_refresh()
+        position = max(0, int(position))
+        target = f"{position // 3600:02d}:{(position % 3600) // 60:02d}:{position % 60:02d}"
+        if self._uses_software_next():
+            await self._async_call_avt_fresh(
+                "Seek",
+                InstanceID=0,
+                Unit="REL_TIME",
+                Target=target,
+            )
+        else:
+            await self.device.async_seek_rel_time(timedelta(seconds=position))
+            self._schedule_state_refresh()
+            return
+        self._attr_elapsed_time = float(position)
+        self._attr_elapsed_time_last_updated = time.time()
+        self.update_state()
 
     @catch_request_errors
     async def volume_set(self, volume_level: int) -> None:
@@ -585,7 +599,9 @@ class DLNAPlayer(Player):
             supported_features.add(PlayerFeature.PAUSE)
         if self.device.has_next and self.device.has_previous:
             supported_features.add(PlayerFeature.NEXT_PREVIOUS)
-        if self.device.has_seek_rel_time:
+        if self.device.has_seek_rel_time or (
+            self._uses_software_next() and self.device._action("AVT", "Seek") is not None
+        ):
             supported_features.add(PlayerFeature.SEEK)
         self._attr_supported_features = supported_features
 
@@ -631,6 +647,11 @@ class DLNAPlayer(Player):
             elapsed = self.corrected_elapsed_time or 0.0
             max_elapsed = max(max_elapsed, elapsed)
             current_media = self.current_media
+            if current_duration and max_elapsed >= current_duration:
+                if self._stop_generation != stop_generation:
+                    return
+                await self.play_media(media)
+                return
             if self.playback_state == PlaybackState.IDLE:
                 if self._stop_generation != stop_generation:
                     return
