@@ -5,10 +5,9 @@ import functools
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
+from http.client import HTTPConnection, HTTPException
 from typing import TYPE_CHECKING, Any, Concatenate
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError
 
 import defusedxml.ElementTree as DefusedET
@@ -651,23 +650,32 @@ class DLNAPlayer(Player):
 
         # Some Marantz renderers leave a reused keep-alive connection pending
         # even though the same SOAP request succeeds immediately on a new one.
-        if urlparse(request.url).scheme != "http":
+        parsed_url = urlparse(request.url)
+        if parsed_url.scheme != "http" or parsed_url.hostname is None:
             raise UpnpError(f"Unsupported Marantz AVT URL: {request.url}")
 
         def _send_request() -> tuple[int, Any, bytes]:
-            http_request = Request(  # noqa: S310
-                request.url,
-                data=(request.body or "").encode(),
-                headers={**request.headers, "Connection": "close"},
-                method=request.method,
+            connection = HTTPConnection(
+                parsed_url.hostname,
+                parsed_url.port or 80,
+                timeout=5,
             )
+            request_target = parsed_url.path or "/"
+            if parsed_url.query:
+                request_target = f"{request_target}?{parsed_url.query}"
             try:
-                with urlopen(http_request, timeout=5) as response:  # noqa: S310
-                    return response.status, response.headers, response.read()
-            except HTTPError as err:
-                return err.code, err.headers, err.read()
-            except URLError as err:
+                connection.request(
+                    request.method,
+                    request_target,
+                    body=request.body,
+                    headers={**request.headers, "Connection": "close"},
+                )
+                response = connection.getresponse()
+                return response.status, dict(response.getheaders()), response.read()
+            except (HTTPException, OSError) as err:
                 raise UpnpError(f"Error calling Marantz AVT/{action_name}: {err}") from err
+            finally:
+                connection.close()
 
         status, headers, response_body = await asyncio.to_thread(_send_request)
         if status != 200:
