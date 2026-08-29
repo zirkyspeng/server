@@ -5,7 +5,6 @@ import functools
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
-from http.client import HTTPConnection, HTTPException
 from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import urlparse
 from xml.etree.ElementTree import ParseError
@@ -654,30 +653,66 @@ class DLNAPlayer(Player):
         if parsed_url.scheme != "http" or parsed_url.hostname is None:
             raise UpnpError(f"Unsupported Marantz AVT URL: {request.url}")
 
-        def _send_request() -> tuple[int, Any, bytes]:
-            connection = HTTPConnection(
-                parsed_url.hostname,
-                parsed_url.port or 80,
+        request_target = parsed_url.path or "/"
+        if parsed_url.query:
+            request_target = f"{request_target}?{parsed_url.query}"
+        request_body = (request.body or "").encode()
+        request_headers = {
+            **request.headers,
+            "Connection": "close",
+            "Content-Length": str(len(request_body)),
+            "Host": parsed_url.netloc,
+        }
+        raw_headers = "".join(f"{key}: {value}\r\n" for key, value in request_headers.items())
+        raw_request = (
+            f"{request.method} {request_target} HTTP/1.1\r\n{raw_headers}\r\n".encode("latin-1")
+            + request_body
+        )
+        port = parsed_url.port or 80
+        self.logger.debug(
+            "Opening fresh Marantz AVT/%s connection to %s:%s",
+            action_name,
+            parsed_url.hostname,
+            port,
+        )
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(parsed_url.hostname, port),
                 timeout=5,
             )
-            request_target = parsed_url.path or "/"
-            if parsed_url.query:
-                request_target = f"{request_target}?{parsed_url.query}"
             try:
-                connection.request(
-                    request.method,
-                    request_target,
-                    body=request.body,
-                    headers={**request.headers, "Connection": "close"},
+                writer.write(raw_request)
+                await writer.drain()
+                self.logger.debug("Sent fresh Marantz AVT/%s request", action_name)
+                raw_response_headers = await asyncio.wait_for(
+                    reader.readuntil(b"\r\n\r\n"),
+                    timeout=5,
                 )
-                response = connection.getresponse()
-                return response.status, dict(response.getheaders()), response.read()
-            except (HTTPException, OSError) as err:
-                raise UpnpError(f"Error calling Marantz AVT/{action_name}: {err}") from err
+                response_header_lines = raw_response_headers.decode("latin-1").split("\r\n")
+                status = int(response_header_lines[0].split(" ", 2)[1])
+                headers = {
+                    key.strip(): value.strip()
+                    for line in response_header_lines[1:]
+                    if ":" in line
+                    for key, value in (line.split(":", 1),)
+                }
+                content_length = int(headers.get("Content-Length", "0"))
+                response_body = (
+                    await asyncio.wait_for(reader.readexactly(content_length), timeout=5)
+                    if content_length
+                    else b""
+                )
+                self.logger.debug(
+                    "Received fresh Marantz AVT/%s response: %s",
+                    action_name,
+                    status,
+                )
             finally:
-                connection.close()
-
-        status, headers, response_body = await asyncio.to_thread(_send_request)
+                writer.close()
+                with suppress(Exception):
+                    await writer.wait_closed()
+        except (OSError, TimeoutError, ValueError, asyncio.IncompleteReadError) as err:
+            raise UpnpError(f"Error calling Marantz AVT/{action_name}: {err}") from err
         if status != 200:
             raise UpnpResponseError(
                 status=status,
