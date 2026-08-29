@@ -96,6 +96,7 @@ class DLNAPlayer(Player):
 
         self._observed_playback_state: PlaybackState | None = None
         self._playing_since: float | None = None
+        self._stop_generation = 0
 
         # ssdp_connect_failed: bool = False
         #
@@ -219,6 +220,7 @@ class DLNAPlayer(Player):
     async def stop(self) -> None:
         """Send STOP command to given player."""
         assert self.device is not None  # for type checking
+        self._stop_generation += 1
         if self.device.can_stop:
             await self.device.async_stop()
             return
@@ -264,6 +266,18 @@ class DLNAPlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         assert self.device is not None  # for type checking
+        if self._uses_software_next() and self.current_media and self.current_media.uri:
+            self.mass.create_task(
+                self._play_enqueued_media_after_stop(
+                    media,
+                    self.current_media.uri,
+                    self.current_media.duration,
+                    self._stop_generation,
+                ),
+                task_id=f"dlna_software_next_{self.player_id}",
+                abort_existing=True,
+            )
+            return
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url)
         title = media.title or media.uri
@@ -487,7 +501,8 @@ class DLNAPlayer(Player):
             # so we simply assume it does and if it doesn't
             # you'll find out at playback time and we log a warning
             supported_features.add(PlayerFeature.ENQUEUE)
-            supported_features.add(PlayerFeature.GAPLESS_PLAYBACK)
+            if not self._uses_software_next():
+                supported_features.add(PlayerFeature.GAPLESS_PLAYBACK)
 
         if self.device.has_volume_level:
             supported_features.add(PlayerFeature.VOLUME_SET)
@@ -496,6 +511,41 @@ class DLNAPlayer(Player):
         if self.device.has_pause:
             supported_features.add(PlayerFeature.PAUSE)
         self._attr_supported_features = supported_features
+
+    def _uses_software_next(self) -> bool:
+        """Return whether this player needs a fresh transport URI for every track."""
+        return bool(self.device and "marantz" in (self.device.manufacturer or "").lower())
+
+    async def _play_enqueued_media_after_stop(
+        self,
+        media: PlayerMedia,
+        current_uri: str,
+        current_duration: int | None,
+        stop_generation: int,
+    ) -> None:
+        """
+        Start enqueued media after the current track ends on affected players.
+
+        :param media: Media item to start next.
+        :param current_uri: URI that must remain current while waiting.
+        :param current_duration: Duration reported for the current track.
+        :param stop_generation: Stop counter captured when the item was enqueued.
+        """
+        max_elapsed = 0.0
+        while self.available:
+            elapsed = self.corrected_elapsed_time or 0.0
+            max_elapsed = max(max_elapsed, elapsed)
+            current_media = self.current_media
+            if self.playback_state == PlaybackState.IDLE:
+                if self._stop_generation != stop_generation:
+                    return
+                if current_duration and max_elapsed < max(current_duration - 5, 0):
+                    return
+                await self.play_media(media)
+                return
+            if current_media is None or current_media.uri != current_uri:
+                return
+            await asyncio.sleep(0.25)
 
     async def _is_sonos_passive_speaker(self) -> bool:
         """
