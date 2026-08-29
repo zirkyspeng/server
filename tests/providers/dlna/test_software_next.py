@@ -54,6 +54,7 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
     player.mass.streams.resolve_stream_url = AsyncMock(  # type: ignore[method-assign]
         return_value="http://192.168.1.2/next.flac"
     )
+    player._async_set_transport_uri_fresh = AsyncMock()  # type: ignore[method-assign]
     player.device.async_set_transport_uri = AsyncMock()  # type: ignore[method-assign]
     player.device.async_wait_for_can_play = AsyncMock()  # type: ignore[method-assign]
     player.device.async_play = AsyncMock()  # type: ignore[method-assign]
@@ -72,7 +73,11 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
     set_uri_mock = cast(  # type: ignore[redundant-cast]
         "AsyncMock", player.device.async_set_transport_uri
     )
-    set_uri_mock.assert_awaited_once()
+    set_uri_mock.assert_not_awaited()
+    fresh_set_uri_mock = cast(  # type: ignore[redundant-cast]
+        "AsyncMock", player._async_set_transport_uri_fresh
+    )
+    fresh_set_uri_mock.assert_awaited_once()
     play_mock = cast("AsyncMock", player.device.async_play)  # type: ignore[redundant-cast]
     play_mock.assert_awaited_once()
 
