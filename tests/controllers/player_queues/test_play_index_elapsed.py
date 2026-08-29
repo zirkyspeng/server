@@ -6,6 +6,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
+from music_assistant_models.enums import PlayerFeature
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -101,6 +102,28 @@ async def test_seek_publishes_target_before_restarting_stream() -> None:
     assert events == [("signal", 30), ("restart", 30)]
     assert queue.elapsed_time == 30
     assert queue.elapsed_time_last_updated >= before
+
+
+async def test_seek_uses_active_output_protocol_native_seek() -> None:
+    """A seek-capable output protocol keeps the original stream and full duration."""
+    ctrl, queue, _signals = _controller_with_stale_queue()
+    parent_player = MagicMock()
+    parent_player.active_output_protocol = "protocol-player"
+    protocol_player = MagicMock()
+    protocol_player.state.supported_features = {PlayerFeature.SEEK}
+    protocol_player.seek = AsyncMock()
+    ctrl.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda player_id, *_args: (
+            parent_player if player_id == QUEUE_ID else protocol_player
+        )
+    )
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+
+    await ctrl.seek(QUEUE_ID, 30)
+
+    protocol_player.seek.assert_awaited_once_with(30)
+    ctrl.play_index.assert_not_awaited()
+    assert queue.elapsed_time == 30
 
 
 async def test_play_index_retry_fallback_discards_failed_items_seek_position() -> None:

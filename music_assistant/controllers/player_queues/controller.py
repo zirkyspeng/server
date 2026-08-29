@@ -24,6 +24,7 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     PlaybackState,
+    PlayerFeature,
     PlayerType,
     QueueOption,
     RepeatMode,
@@ -877,6 +878,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time = position
         queue.elapsed_time_last_updated = time.time()
         self.signal_update(queue_id)
+        seek_player = queue_player
+        if (
+            queue_player.active_output_protocol
+            and queue_player.active_output_protocol != "native"
+            and (
+                protocol_player := self.mass.players.get_player(queue_player.active_output_protocol)
+            )
+        ):
+            seek_player = protocol_player
+        if PlayerFeature.SEEK in seek_player.state.supported_features:
+            await seek_player.seek(position)
+            return
         await self.play_index(queue_id, queue.current_index, seek_position=position)
 
     @api_command("player_queues/resume", required_scope=Scope.QUEUES_CONTROL)
