@@ -279,6 +279,10 @@ class DLNAPlayer(Player):
                     CurrentURI=url,
                     CurrentURIMetaData=didl_metadata,
                 )
+                # Some Marantz inputs take longer to inspect a FLAC before the
+                # transport is ready. Starting immediately can make playback
+                # succeed while the HEOS display misses the metadata update.
+                await self.device.async_wait_for_can_play(10)
                 await self._async_call_avt_fresh("Play", InstanceID=0, Speed="1")
             else:
                 await self.device.async_set_transport_uri(url, title, didl_metadata)
