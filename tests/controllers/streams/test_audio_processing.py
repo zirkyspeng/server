@@ -143,6 +143,32 @@ def test_audio_processing_manager_attaches_grouped_chain() -> None:
     )
 
 
+def test_audio_processing_manager_publishes_bit_perfect_passthrough() -> None:
+    """A direct lossless proxy still publishes its source-to-player quality chain."""
+    manager, mass, _queue_data, streamdetails, _lossless_plan, _lossy_plan = _manager_context()
+    mass.player_queues.signal_update.reset_mock()
+
+    assert manager.publish_passthrough(
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+        streamdetails=streamdetails,
+        player_ids={"player-1", "player-2"},
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.input_fidelity.quality == AudioQuality.HI_RES
+    assert chain.queue_processing == AudioQueueProcessing()
+    assert chain.outputs[0].player_ids == ["player-1", "player-2"]
+    assert chain.outputs[0].output_format == streamdetails.audio_format
+    assert chain.outputs[0].dsp.state == DSPState.DISABLED
+    assert chain.outputs[0].fidelity == AudioFidelity(
+        quality=AudioQuality.HI_RES,
+        bit_perfect=True,
+    )
+    mass.player_queues.signal_update.assert_called_once_with("queue-1")
+
+
 def test_lossy_source_can_have_bit_perfect_lossless_output() -> None:
     """Lossy source quality does not prevent preserving its decoded PCM samples."""
     manager, _mass, _queue_data, streamdetails, lossless_plan, lossy_plan = _manager_context()
@@ -1311,13 +1337,23 @@ async def test_byte_stable_passthrough_forwards_exact_source_length(
         "music_assistant.controllers.streams.controller.web.StreamResponse", response_type
     )
 
-    result = await controller._serve_byte_stable_lossless_source(request, queue, queue_item, 180)
+    player = controller.mass.players.get_player.return_value
+    result = await controller._serve_byte_stable_lossless_source(
+        request, queue, queue_item, player, "session-1", 180
+    )
 
     assert result is response
     assert response.content_length == 9
     response.write.assert_awaited_once_with(b"fLaC-data")
     controller.mass.player_queues.track_loaded_in_buffer.assert_called_once_with(
         "queue-1", "item-1"
+    )
+    controller.audio_processing.publish_passthrough.assert_called_once_with(
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+        streamdetails=queue_item.streamdetails,
+        player_ids={"player-1", "player-2"},
     )
 
 
@@ -2005,6 +2041,7 @@ def _native_stream_handler_context(
     controller = cast("Any", object.__new__(StreamsController))
     controller.mass = mass
     controller.audio = audio
+    controller.audio_processing = MagicMock()
     controller.logger = MagicMock()
     controller._log_request = MagicMock()
     controller._update_audio_processing_context = MagicMock()

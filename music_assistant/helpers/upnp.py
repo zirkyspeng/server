@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from math import isfinite
 from typing import TYPE_CHECKING
+from unicodedata import normalize
 from xml.sax.saxutils import escape as xmlescape
 
 from music_assistant_models.enums import MediaType
@@ -207,13 +208,33 @@ def get_xml_soap_create_queue() -> tuple[str, str]:
 
 # DIDL-LITE
 def create_didl_metadata(
-    media: PlayerMedia, url: str | None = None, *, supports_time_seek: bool = False
+    media: PlayerMedia,
+    url: str | None = None,
+    *,
+    supports_time_seek: bool = False,
+    ascii_only: bool = False,
 ) -> str:
     """Create DIDL metadata string from url and PlayerMedia."""
     uri = url or media.uri
 
     def escape_metadata(data: str) -> str:
         """Escape didl metadata."""
+        if ascii_only:
+            # Some Marantz firmware truncates decimal Unicode entities to one
+            # byte (for example U+2019 becomes control byte 0x19), causing its
+            # on-screen metadata parser to discard the whole update.
+            for old, new in (
+                ("\u2018", "'"),
+                ("\u2019", "'"),
+                ("\u201c", '"'),
+                ("\u201d", '"'),
+                ("\u2013", "-"),
+                ("\u2014", "-"),
+                ("\u2026", "..."),
+            ):
+                data = data.replace(old, new)
+            data = normalize("NFKD", data).encode("ascii", "ignore").decode()
+            data = "".join(char if char.isprintable() else " " for char in data)
         data = xmlescape(data)
         # Escape non-ascii to decimal code.
         result = ""
