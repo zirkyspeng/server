@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from aiofiles.os import wrap
-from aiohttp import web
+from aiohttp import ClientTimeout, web
 from music_assistant_models.audio_processing import AudioQueueProcessing
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
@@ -1868,6 +1868,7 @@ class StreamsController(CoreController):
             streamdetails.path,
             headers=source_headers,
             allow_redirects=True,
+            timeout=ClientTimeout(total=None, connect=30, sock_read=5 * 60),
         ) as source_response:
             if source_response.status >= 400:
                 raise web.HTTPBadGateway(

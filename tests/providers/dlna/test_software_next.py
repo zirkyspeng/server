@@ -63,6 +63,7 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
         uri="library://track/next",
         media_type=MediaType.TRACK,
         title="Next track",
+        image_url="http://192.168.1.2:8097/imageproxy/abc?size=512&fmt=jpeg",
         duration=180,
         queue_item_id="queue-item-next",
     )
@@ -87,13 +88,33 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
         ),
         call("Play", InstanceID=0, Speed="1"),
     ]
+    metadata = fresh_set_uri_mock.await_args_list[0].kwargs["CurrentURIMetaData"]
+    assert "imageproxy/abc?size=256&amp;fmt=jpeg" in metadata
     wait_for_play_mock = cast("AsyncMock", player.device.async_wait_for_can_play)
-    wait_for_play_mock.assert_awaited_once_with(10)
+    wait_for_play_mock.assert_not_awaited()
     play_mock = cast("AsyncMock", player.device.async_play)  # type: ignore[redundant-cast]
     play_mock.assert_not_awaited()
     assert player.current_media is not None
     assert player.current_media.duration == 180
     assert player.current_media.queue_item_id == "queue-item-next"
+
+
+def test_marantz_uses_small_jpeg_imageproxy_artwork() -> None:
+    """Marantz metadata uses artwork it can publish without delaying playback state."""
+    player = _player("Marantz")
+    image_url = "http://192.168.1.2:8097/imageproxy/abc?size=512&fmt=png"
+
+    assert player._metadata_image_url(image_url) == (
+        "http://192.168.1.2:8097/imageproxy/abc?size=256&fmt=jpeg"
+    )
+
+
+def test_other_dlna_players_keep_original_artwork_url() -> None:
+    """The Marantz artwork workaround must not alter other renderers."""
+    player = _player("Other")
+    image_url = "http://192.168.1.2:8097/imageproxy/abc?size=512&fmt=jpeg"
+
+    assert player._metadata_image_url(image_url) == image_url
 
 
 async def test_marantz_arms_software_next_with_optimistic_duration() -> None:

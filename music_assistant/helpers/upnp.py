@@ -213,6 +213,7 @@ def create_didl_metadata(
     *,
     supports_time_seek: bool = False,
     ascii_only: bool = False,
+    image_url: str | None = None,
 ) -> str:
     """Create DIDL metadata string from url and PlayerMedia."""
     uri = url or media.uri
@@ -249,7 +250,7 @@ def create_didl_metadata(
 
     ext = uri.split(".")[-1].split("?")[0]
     mime_type = get_mime_type(ext)
-    image_url = media.image_url or MASS_LOGO_ONLINE
+    image_url = image_url or media.image_url or MASS_LOGO_ONLINE
     if media.media_type in (MediaType.FLOW_STREAM, MediaType.RADIO) or not media.duration:
         # flow stream, radio or other duration-less stream
         # Use streaming-optimized DLNA flags to prevent buffering

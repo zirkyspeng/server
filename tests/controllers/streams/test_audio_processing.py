@@ -1345,6 +1345,10 @@ async def test_byte_stable_passthrough_forwards_exact_source_length(
     assert result is response
     assert response.content_length == 9
     response.write.assert_awaited_once_with(b"fLaC-data")
+    source_timeout = controller.mass.http_session.request.call_args.kwargs["timeout"]
+    assert source_timeout.total is None
+    assert source_timeout.connect == 30
+    assert source_timeout.sock_read == 5 * 60
     controller.mass.player_queues.track_loaded_in_buffer.assert_called_once_with(
         "queue-1", "item-1"
     )
