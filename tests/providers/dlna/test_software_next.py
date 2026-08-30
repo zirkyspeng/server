@@ -27,6 +27,7 @@ def _player(manufacturer: str, duration: int = 20) -> DLNAPlayer:
     device.transport_state = TransportState.PLAYING
     device.async_set_next_transport_uri = AsyncMock()
     device.async_stop = AsyncMock()
+    device.async_wait_for_can_play = AsyncMock()
     device._action.return_value = MagicMock()
     player = DLNAPlayer(
         provider,  # type: ignore[arg-type]
@@ -57,7 +58,6 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
     )
     player._async_call_avt_fresh = AsyncMock()  # type: ignore[method-assign]
     player.device.async_set_transport_uri = AsyncMock()  # type: ignore[method-assign]
-    player.device.async_wait_for_can_play = AsyncMock()  # type: ignore[method-assign]
     player.device.async_play = AsyncMock()  # type: ignore[method-assign]
     media = PlayerMedia(
         uri="library://track/next",
@@ -87,6 +87,8 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
         ),
         call("Play", InstanceID=0, Speed="1"),
     ]
+    wait_for_play_mock = cast("AsyncMock", player.device.async_wait_for_can_play)
+    wait_for_play_mock.assert_awaited_once_with(10)
     play_mock = cast("AsyncMock", player.device.async_play)  # type: ignore[redundant-cast]
     play_mock.assert_not_awaited()
     assert player.current_media is not None
@@ -108,7 +110,9 @@ async def test_marantz_arms_software_next_with_optimistic_duration() -> None:
     def _discard_task(target: Coroutine[Any, Any, Any], **_kwargs: Any) -> None:
         target.close()
 
-    player.mass.create_task = MagicMock(side_effect=_discard_task)
+    player.mass.create_task = MagicMock(  # type: ignore[method-assign]
+        side_effect=_discard_task
+    )
     current_media = PlayerMedia(
         uri="library://track/current",
         media_type=MediaType.TRACK,
@@ -125,7 +129,7 @@ async def test_marantz_arms_software_next_with_optimistic_duration() -> None:
     await player.play_media(current_media)
     await player.enqueue_next_media(next_media)
 
-    player._play_enqueued_media_after_stop.assert_called_once_with(  # type: ignore[attr-defined]
+    player._play_enqueued_media_after_stop.assert_called_once_with(
         next_media,
         "http://192.168.1.2/current.flac",
         180,
