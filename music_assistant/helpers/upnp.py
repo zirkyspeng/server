@@ -214,6 +214,7 @@ def create_didl_metadata(
     supports_time_seek: bool = False,
     ascii_only: bool = False,
     image_url: str | None = None,
+    minimal_profile: bool = False,
 ) -> str:
     """Create DIDL metadata string from url and PlayerMedia."""
     uri = url or media.uri
@@ -284,6 +285,26 @@ def create_didl_metadata(
     duration_str = str(stream_duration // 3600).zfill(2) + ":"
     duration_str += str((stream_duration % 3600) // 60).zfill(2) + ":"
     duration_str += str(stream_duration % 60).zfill(2)
+
+    if minimal_profile:
+        # Some Marantz firmware interprets Sonos queue extensions as a signal to
+        # defer publishing the transport state. Keep only standard music-track
+        # metadata so HEOS can update the display as playback starts.
+        return (
+            '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+            'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+            '<item id="1" parentID="1" restricted="1">'
+            f"<dc:title>{escape_metadata(media.title or uri)}</dc:title>"
+            f"<dc:creator>{escape_metadata(media.artist or '')}</dc:creator>"
+            f"<upnp:artist>{escape_metadata(media.artist or '')}</upnp:artist>"
+            f"<upnp:album>{escape_metadata(media.album or '')}</upnp:album>"
+            f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
+            "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
+            f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP={"11" if supports_time_seek else "01"};DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(uri)}</res>'
+            "</item>"
+            "</DIDL-Lite>"
+        )
 
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">'

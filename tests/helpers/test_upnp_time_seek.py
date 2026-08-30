@@ -87,3 +87,31 @@ def test_ascii_metadata_folds_smart_punctuation_for_legacy_renderers() -> None:
 
     assert "Tears Don't Fall - Demo" in metadata
     assert "&#8217;" not in metadata
+
+
+def test_minimal_metadata_profile_omits_sonos_queue_extensions() -> None:
+    """A minimal renderer profile keeps track details without Sonos queue fields."""
+    media = PlayerMedia(
+        uri="library://track/1",
+        media_type=MediaType.TRACK,
+        queue_item_id="item-1",
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="http://192.168.1.2/image.jpg",
+        duration=300,
+    )
+
+    metadata = create_didl_metadata(
+        media,
+        "http://192.168.1.2/item.flac",
+        supports_time_seek=True,
+        minimal_profile=True,
+    )
+
+    assert '<item id="1" parentID="1" restricted="1">' in metadata
+    assert "<dc:title>Track</dc:title>" in metadata
+    assert "<upnp:albumArtURI>http://192.168.1.2/image.jpg</upnp:albumArtURI>" in metadata
+    assert "DLNA.ORG_OP=11" in metadata
+    assert "dc:queueItemId" not in metadata
+    assert "cdudn" not in metadata

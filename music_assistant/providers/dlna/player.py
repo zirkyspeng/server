@@ -252,6 +252,7 @@ class DLNAPlayer(Player):
             supports_time_seek=self.supports_http_time_seek,
             ascii_only=self._uses_software_next(),
             image_url=self._metadata_image_url(media.image_url),
+            minimal_profile=self._uses_software_next(),
         )
         title = media.title or media.uri
         # optimistically set the state here to help in case of a player
@@ -313,6 +314,7 @@ class DLNAPlayer(Player):
             supports_time_seek=self.supports_http_time_seek,
             ascii_only=self._uses_software_next(),
             image_url=self._metadata_image_url(media.image_url),
+            minimal_profile=self._uses_software_next(),
         )
         title = media.title or media.uri
         try:
