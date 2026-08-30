@@ -421,6 +421,11 @@ class DLNAPlayer(Player):
         await super().on_unload()
         await self._device_disconnect()
 
+    @property
+    def supports_http_time_seek(self) -> bool:
+        """Return whether this renderer should receive seekable DLNA track streams."""
+        return self._uses_software_next()
+
     async def _device_connect(self) -> None:
         """Connect DLNA/DMR Device."""
         self.logger.debug("Connecting to device at %s", self.description_url)
@@ -561,14 +566,10 @@ class DLNAPlayer(Player):
         # Marantz accepts AVTransport/Seek with HTTP 200 but never reconnects to
         # the stream at the requested TimeSeekRange. Leave native SEEK hidden so
         # the queue controller rebuilds the stream at the target offset instead.
-        # The response still carries the absolute TimeSeekRange and full duration,
-        # allowing the renderer to keep a media timeline for that restarted stream.
+        # TimeSeekRange still marks that rebuilt HTTP stream as seekable, but the
+        # renderer reports time relative to its new start; the queue adds the
+        # stream's seek offset to restore the full media timeline.
         self._attr_supported_features = supported_features
-
-    @property
-    def supports_http_time_seek(self) -> bool:
-        """Return whether this renderer should receive seekable DLNA track streams."""
-        return self._uses_software_next()
 
     def _uses_software_next(self) -> bool:
         """Return whether this player needs a fresh transport URI for every track."""

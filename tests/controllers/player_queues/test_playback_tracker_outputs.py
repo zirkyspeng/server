@@ -30,22 +30,3 @@ def test_output_player_ids_resolve_protocol_parents() -> None:
     )
 
     assert result == {"queue-1", "player-1", "missing-player"}
-
-
-def test_time_seek_protocol_reports_absolute_stream_time() -> None:
-    """A parent player inherits absolute timing from its active DLNA output."""
-    protocol_player = MagicMock()
-    protocol_player.supports_http_time_seek = True
-    tracker = cast(
-        "Any",
-        SimpleNamespace(
-            mass=SimpleNamespace(
-                players=SimpleNamespace(get_player=MagicMock(return_value=protocol_player))
-            )
-        ),
-    )
-    parent = MagicMock(active_output_protocol="protocol-1")
-
-    assert PlaybackTrackerMixin._player_reports_absolute_stream_time(
-        tracker, cast("Player", parent)
-    )

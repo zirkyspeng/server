@@ -6,7 +6,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import PlayerFeature
+from music_assistant_models.enums import PlayerFeature, PlayerType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -127,7 +127,7 @@ async def test_seek_uses_active_output_protocol_native_seek() -> None:
 
 
 async def test_seek_restarts_time_seek_stream_when_protocol_hides_native_seek() -> None:
-    """A Marantz-like protocol rebuilds the stream even though it has an absolute timeline."""
+    """A Marantz-like protocol rebuilds the stream instead of issuing native seek."""
     ctrl, _queue, _signals = _controller_with_stale_queue()
     parent_player = MagicMock()
     parent_player.active_output_protocol = "protocol-player"
@@ -146,6 +146,22 @@ async def test_seek_restarts_time_seek_stream_when_protocol_hides_native_seek() 
 
     protocol_player.seek.assert_not_awaited()
     ctrl.play_index.assert_awaited_once_with(QUEUE_ID, 0, seek_position=30)
+
+
+def test_restarted_stream_progress_is_restored_to_media_timeline() -> None:
+    """Relative Marantz progress includes the software seek offset in the queue."""
+    ctrl, queue, _signals = _controller_with_stale_queue()
+    assert queue.current_item is not None
+    queue.current_item.streamdetails = MagicMock(seek_position=30)
+    player = MagicMock(player_id=QUEUE_ID, type=PlayerType.PLAYER)
+    player.state.corrected_elapsed_time = 4
+    signal_event = Mock()
+    ctrl.mass.signal_event = signal_event  # type: ignore[method-assign]
+
+    ctrl.on_player_elapsed_time_corrected(player)
+
+    assert queue.elapsed_time == 34
+    signal_event.assert_called_once()
 
 
 async def test_play_index_retry_fallback_discards_failed_items_seek_position() -> None:
