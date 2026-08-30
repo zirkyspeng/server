@@ -90,6 +90,8 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
     ]
     metadata = fresh_set_uri_mock.await_args_list[0].kwargs["CurrentURIMetaData"]
     assert "imageproxy/abc?size=256&amp;fmt=jpeg" in metadata
+    assert "dc:queueItemId" not in metadata
+    assert "cdudn" not in metadata
     wait_for_play_mock = cast("AsyncMock", player.device.async_wait_for_can_play)
     wait_for_play_mock.assert_not_awaited()
     play_mock = cast("AsyncMock", player.device.async_play)  # type: ignore[redundant-cast]
