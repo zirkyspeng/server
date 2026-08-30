@@ -258,6 +258,113 @@ class StreamsController(CoreController):
         """Return whether a queue stream (single item or flow) is actively serving a player."""
         return self._active_output_streams > 0
 
+    @staticmethod
+    def _can_serve_byte_stable_lossless_source(
+        request: web.Request, player: Player, queue_item: QueueItem
+    ) -> bool:
+        """Return whether a Marantz request can use the original lossless HTTP object."""
+        streamdetails = queue_item.streamdetails
+        if streamdetails is None or not isinstance(streamdetails.path, str):
+            return False
+        playback_speed = queue_item.extra_attributes.get("playback_speed", 1.0) or 1.0
+        return bool(
+            player.supports_http_time_seek is True
+            and queue_item.media_type == MediaType.TRACK
+            and request.match_info["fmt"] == ContentType.FLAC.value
+            and streamdetails.audio_format.content_type == ContentType.FLAC
+            and streamdetails.path.startswith(("http://", "https://"))
+            and streamdetails.decryption_key is None
+            and not streamdetails.fade_in
+            and float(playback_speed) == 1.0
+        )
+
+    async def _serve_byte_stable_lossless_source(
+        self,
+        request: web.Request,
+        queue: PlayerQueue,
+        queue_item: QueueItem,
+        stream_duration: float,
+    ) -> web.StreamResponse:
+        """Proxy the original FLAC object, preserving exact byte ranges and length."""
+        streamdetails = queue_item.streamdetails
+        assert streamdetails is not None
+        assert isinstance(streamdetails.path, str)
+
+        source_headers = {"Accept-Encoding": "identity"}
+        range_value = request.headers.get("Range")
+        byte_range_request = range_value if isinstance(range_value, str) else None
+        if byte_range_request:
+            source_headers["Range"] = byte_range_request
+
+        async with self.mass.http_session.request(
+            request.method,
+            streamdetails.path,
+            headers=source_headers,
+            allow_redirects=True,
+        ) as source_response:
+            if source_response.status >= 400:
+                raise web.HTTPBadGateway(
+                    reason=f"Lossless source returned HTTP {source_response.status}"
+                )
+            if byte_range_request and source_response.status != 206:
+                raise web.HTTPBadGateway(reason="Lossless source ignored the byte range")
+            if source_response.content_length is None:
+                raise web.HTTPBadGateway(reason="Lossless source has no exact content length")
+
+            elapsed_time = (
+                float(queue.elapsed_time)
+                if byte_range_request and queue.current_item is queue_item
+                else 0.0
+            )
+            headers = {
+                **DEFAULT_STREAM_HEADERS,
+                "icy-name": sanitize_http_header_value(queue_item.name),
+                "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_TIME_SEEK,
+                "Content-Type": get_mime_type(ContentType.FLAC.value),
+                "Accept-Ranges": "bytes",
+                TIME_SEEK_HEADER: format_time_seek_range(
+                    elapsed_time,
+                    max(stream_duration - 0.001, elapsed_time),
+                    stream_duration,
+                ),
+            }
+            if content_range := source_response.headers.get("Content-Range"):
+                headers["Content-Range"] = content_range
+
+            response = web.StreamResponse(
+                status=source_response.status,
+                reason=source_response.reason,
+                headers=headers,
+            )
+            response.content_type = get_mime_type(ContentType.FLAC.value)
+            response.content_length = source_response.content_length
+            await response.prepare(request)
+            if request.method != "GET":
+                return response
+
+            self.logger.debug(
+                "Serving byte-stable source FLAC for %s (%s, content length: %s)",
+                queue_item.name,
+                byte_range_request or "full object",
+                source_response.content_length,
+            )
+            first_chunk_received = False
+            try:
+                async for chunk in source_response.content.iter_chunked(64 * 1024):
+                    await response.write(chunk)
+                    if not first_chunk_received:
+                        first_chunk_received = True
+                        self.mass.player_queues.track_loaded_in_buffer(
+                            queue_item.queue_id, queue_item.queue_item_id
+                        )
+            except BrokenPipeError, ConnectionResetError, ConnectionError:
+                self.logger.debug(
+                    "Player %s closed byte-stable FLAC stream for %s",
+                    queue.display_name,
+                    queue_item.name,
+                )
+            return response
+
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this controller to include in diagnostics reports."""
         return {
@@ -768,6 +875,14 @@ class StreamsController(CoreController):
                 and queue_item.media_type == MediaType.TRACK
                 and stream_duration > 0
             )
+            if self._can_serve_byte_stable_lossless_source(request, player, queue_item):
+                # A dynamically re-encoded FLAC has no exact length until encoding
+                # finishes. Marantz derives its on-screen duration from that length,
+                # so proxy the provider's original lossless file when possible. This
+                # also gives the renderer true byte ranges and preserves source quality.
+                return await self._serve_byte_stable_lossless_source(
+                    request, queue, queue_item, stream_duration
+                )
             effective_seek_position = int(queue_item.streamdetails.seek_position)
             requested_time_seek_end: float | None = None
             byte_range_value = request.headers.get("Range")

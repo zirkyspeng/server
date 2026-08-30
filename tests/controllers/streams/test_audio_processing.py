@@ -1265,6 +1265,62 @@ async def test_single_stream_handler_serves_marantz_byte_seek_as_partial_content
     assert response.content_length == 400
 
 
+def test_marantz_flac_http_source_uses_byte_stable_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A direct lossless HTTP source can preserve its exact length and byte ranges."""
+    controller, request, _group_members = _native_stream_handler_context(monkeypatch)
+    player = controller.mass.players.get_player.return_value
+    player.supports_http_time_seek = True
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.streamdetails.audio_format.content_type = ContentType.FLAC
+    queue_item.streamdetails.path = "http://media.local/track.flac"
+
+    assert controller._can_serve_byte_stable_lossless_source(request, player, queue_item)
+
+
+@pytest.mark.asyncio
+async def test_byte_stable_passthrough_forwards_exact_source_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The passthrough response keeps the provider object's exact byte length."""
+    controller, request, _group_members = _native_stream_handler_context(monkeypatch)
+    queue = controller.mass.player_queues.get.return_value
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.streamdetails.path = "http://media.local/track.flac"
+
+    async def source_chunks() -> AsyncGenerator[bytes]:
+        yield b"fLaC-data"
+
+    source_response = MagicMock(
+        status=200,
+        reason="OK",
+        content_length=9,
+        headers={"Accept-Ranges": "bytes"},
+    )
+    source_response.content.iter_chunked.return_value = source_chunks()
+    source_context = MagicMock()
+    source_context.__aenter__ = AsyncMock(return_value=source_response)
+    source_context.__aexit__ = AsyncMock(return_value=False)
+    controller.mass.http_session.request.return_value = source_context
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    response.write = AsyncMock()
+    response_type = MagicMock(return_value=response)
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.web.StreamResponse", response_type
+    )
+
+    result = await controller._serve_byte_stable_lossless_source(request, queue, queue_item, 180)
+
+    assert result is response
+    assert response.content_length == 9
+    response.write.assert_awaited_once_with(b"fLaC-data")
+    controller.mass.player_queues.track_loaded_in_buffer.assert_called_once_with(
+        "queue-1", "item-1"
+    )
+
+
 @pytest.mark.asyncio
 async def test_flow_stream_handler_shares_native_group_members(
     monkeypatch: pytest.MonkeyPatch,
