@@ -93,3 +93,21 @@ def test_parse_current_item_id_ignores_stale_sonos_item_id() -> None:
 
     assert result is None
     get_item.assert_called_once_with("queue-1", "replaced-away-item")
+
+def test_time_seek_protocol_reports_absolute_stream_time() -> None:
+    """A parent player inherits absolute timing from its active DLNA output."""
+    protocol_player = MagicMock()
+    protocol_player.supports_http_time_seek = True
+    tracker = cast(
+        "Any",
+        SimpleNamespace(
+            mass=SimpleNamespace(
+                players=SimpleNamespace(get_player=MagicMock(return_value=protocol_player))
+            )
+        ),
+    )
+    parent = MagicMock(active_output_protocol="protocol-1")
+
+    assert PlaybackTrackerMixin._player_reports_absolute_stream_time(
+        tracker, cast("Player", parent)
+    )
