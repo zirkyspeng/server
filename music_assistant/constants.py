@@ -917,6 +917,9 @@ DEFAULT_STREAM_HEADERS = {
 # Bufferable streams (tracks, flow mode): player may buffer aggressively.
 # Flags: 0x01700000 = Streaming + Background + Connection Stalling + V1.5
 DLNA_CONTENT_FEATURES = "DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+# Seekable on-demand streams: time-seek is supported, byte-seek is not.
+# The first DLNA.ORG_OP bit advertises TimeSeekRange.dlna.org support.
+DLNA_CONTENT_FEATURES_TIME_SEEK = "DLNA.ORG_OP=10;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 # Realtime streams (radio, plugin sources): server controls data rate,
 # player should not try to buffer ahead faster than the server delivers.
 # Flags: 0x81700000 = Sender Paced + Streaming + Background + Connection Stalling + V1.5

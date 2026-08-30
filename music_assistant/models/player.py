@@ -548,6 +548,11 @@ class Player(ABC):
         return self._attr_needs_poll
 
     @property
+    def supports_http_time_seek(self) -> bool:
+        """Return whether HTTP streams can expose DLNA time-based seeking for this player."""
+        return False
+
+    @property
     def poll_interval(self) -> int:
         """
         Return the (dynamic) poll interval for the player.

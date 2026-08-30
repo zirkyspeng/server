@@ -89,6 +89,48 @@ async def test_play_media_skips_stop_when_renderer_is_already_idle() -> None:
     ]
     play_mock = cast("AsyncMock", player.device.async_play)  # type: ignore[redundant-cast]
     play_mock.assert_not_awaited()
+    assert player.current_media is not None
+    assert player.current_media.duration == 180
+    assert player.current_media.queue_item_id == "queue-item-next"
+
+
+async def test_marantz_arms_software_next_with_optimistic_duration() -> None:
+    """Next-track monitoring has a duration before the first renderer poll arrives."""
+    player = _player("Marantz")
+    assert player.device is not None
+    player._attr_playback_state = PlaybackState.IDLE
+    player.mass.streams.resolve_stream_url = AsyncMock(  # type: ignore[method-assign]
+        return_value="http://192.168.1.2/current.flac"
+    )
+    player._async_call_avt_fresh = AsyncMock()  # type: ignore[method-assign]
+    player._play_enqueued_media_after_stop = AsyncMock()  # type: ignore[method-assign]
+
+    def _discard_task(target: Coroutine[Any, Any, Any], **_kwargs: Any) -> None:
+        target.close()
+
+    player.mass.create_task = MagicMock(side_effect=_discard_task)
+    current_media = PlayerMedia(
+        uri="library://track/current",
+        media_type=MediaType.TRACK,
+        duration=180,
+        queue_item_id="current-item",
+    )
+    next_media = PlayerMedia(
+        uri="library://track/next",
+        media_type=MediaType.TRACK,
+        duration=200,
+        queue_item_id="next-item",
+    )
+
+    await player.play_media(current_media)
+    await player.enqueue_next_media(next_media)
+
+    player._play_enqueued_media_after_stop.assert_called_once_with(  # type: ignore[attr-defined]
+        next_media,
+        "http://192.168.1.2/current.flac",
+        180,
+        0,
+    )
 
 
 @pytest.mark.parametrize("duration", [20, 0])
@@ -166,13 +208,14 @@ async def test_marantz_software_next_recovers_when_playing_stalls_at_duration() 
     player.play_media.assert_awaited_once_with(next_media)
 
 
-def test_marantz_does_not_advertise_unusable_native_seek() -> None:
-    """Marantz falls back to a restarted stream because REL_TIME is silently ignored."""
+def test_marantz_advertises_seek_with_http_time_seek_streams() -> None:
+    """Marantz REL_TIME seek is usable when the stream supports DLNA time ranges."""
     player = _player("Marantz")
 
     player._set_player_features()
 
-    assert PlayerFeature.SEEK not in player.supported_features
+    assert player.supports_http_time_seek
+    assert PlayerFeature.SEEK in player.supported_features
 
 
 def test_marantz_does_not_advertise_gapless_for_software_transitions() -> None:

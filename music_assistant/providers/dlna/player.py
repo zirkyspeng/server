@@ -246,12 +246,25 @@ class DLNAPlayer(Player):
         if self.device.can_stop and self.playback_state != PlaybackState.IDLE:
             await self.stop()
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        didl_metadata = create_didl_metadata(media, url)
+        didl_metadata = create_didl_metadata(
+            media, url, supports_time_seek=self.supports_http_time_seek
+        )
         title = media.title or media.uri
         # optimistically set the state here to help in case of a player
         # that is slow or failing to report state changes.
         prev_state = self._attr_playback_state
-        self.set_current_media(uri=url, clear_all=True)
+        self.set_current_media(
+            uri=url,
+            media_type=media.media_type,
+            title=media.title,
+            artist=media.artist,
+            album=media.album,
+            image_url=media.image_url,
+            duration=media.duration,
+            source_id=media.source_id,
+            queue_item_id=media.queue_item_id,
+            clear_all=True,
+        )
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
@@ -290,7 +303,9 @@ class DLNAPlayer(Player):
             )
             return
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        didl_metadata = create_didl_metadata(media, url)
+        didl_metadata = create_didl_metadata(
+            media, url, supports_time_seek=self.supports_http_time_seek
+        )
         title = media.title or media.uri
         try:
             await self.device.async_set_next_transport_uri(url, title, didl_metadata)
@@ -543,12 +558,14 @@ class DLNAPlayer(Player):
             supported_features.add(PlayerFeature.VOLUME_MUTE)
         if self.device.has_pause:
             supported_features.add(PlayerFeature.PAUSE)
-        # Marantz advertises AVTransport/Seek and returns HTTP 200 for REL_TIME, but
-        # silently ignores it for MA's on-the-fly streams (which correctly advertise
-        # Accept-Ranges: none / DLNA.ORG_OP=00).  Do not expose the unusable native
-        # feature: the queue controller will restart the stream at the requested offset
-        # and its playback tracker will add that offset back to the media timeline.
+        if self.supports_http_time_seek and self.device._action("AVT", "Seek") is not None:
+            supported_features.add(PlayerFeature.SEEK)
         self._attr_supported_features = supported_features
+
+    @property
+    def supports_http_time_seek(self) -> bool:
+        """Return whether this renderer should receive seekable DLNA track streams."""
+        return self._uses_software_next()
 
     def _uses_software_next(self) -> bool:
         """Return whether this player needs a fresh transport URI for every track."""

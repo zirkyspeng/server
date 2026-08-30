@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xmlescape
 
@@ -12,6 +13,52 @@ from music_assistant.helpers.audio import get_mime_type
 
 if TYPE_CHECKING:
     from music_assistant.models.player import PlayerMedia
+
+
+TIME_SEEK_HEADER = "TimeSeekRange.dlna.org"
+
+
+def _parse_npt_time(value: str) -> float:
+    """Parse a DLNA normal-play-time token into seconds."""
+    value = value.strip()
+    if not value:
+        raise ValueError("missing NPT time")
+    if ":" not in value:
+        seconds = float(value)
+    else:
+        parts = value.split(":")
+        if len(parts) != 3:
+            raise ValueError("invalid NPT clock time")
+        hours, minutes, seconds_part = parts
+        seconds = int(hours) * 3600 + int(minutes) * 60 + float(seconds_part)
+    if not isfinite(seconds) or seconds < 0:
+        raise ValueError("invalid NPT time")
+    return seconds
+
+
+def parse_time_seek_range(value: str, duration: float) -> tuple[float, float | None]:
+    """Parse and validate a DLNA TimeSeekRange request against a known duration."""
+    if not value.startswith("npt="):
+        raise ValueError("missing npt prefix")
+    range_value = value[4:].split(" ", 1)[0]
+    if "-" not in range_value:
+        raise ValueError("missing NPT range separator")
+    start_value, end_value = range_value.split("-", 1)
+    start = _parse_npt_time(start_value)
+    end = _parse_npt_time(end_value) if end_value else None
+    if start >= duration:
+        raise OverflowError("NPT start is outside the media duration")
+    if end is not None:
+        if end > duration:
+            raise OverflowError("NPT end is outside the media duration")
+        if end <= start:
+            raise ValueError("NPT end must be after start")
+    return start, end
+
+
+def format_time_seek_range(start: float, end: float, duration: float) -> str:
+    """Format the time-only form of a DLNA TimeSeekRange response."""
+    return f"npt={start:.3f}-{end:.3f}/{duration:.3f}"
 
 
 # XML
@@ -159,7 +206,9 @@ def get_xml_soap_create_queue() -> tuple[str, str]:
 
 
 # DIDL-LITE
-def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
+def create_didl_metadata(
+    media: PlayerMedia, url: str | None = None, *, supports_time_seek: bool = False
+) -> str:
     """Create DIDL metadata string from url and PlayerMedia."""
     uri = url or media.uri
 
@@ -204,9 +253,12 @@ def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
     # - Streaming transfer mode (bit 24)
     # - Background transfer mode supported (bit 22)
     # - DLNA v1.5 (bit 20)
-    # the res duration describes the audio we hand over, which is shorter than
-    # the media item when playback starts at a seek position
-    stream_duration = int(media.stream_duration or media.duration or 0)
+    # Time-seek-capable renderers keep an absolute media timeline, including when
+    # the first response starts at a resume offset. Other renderers receive only
+    # the shortened stream and therefore need its remaining duration.
+    stream_duration = int(
+        media.duration if supports_time_seek else (media.stream_duration or media.duration or 0)
+    )
     duration_str = str(stream_duration // 3600).zfill(2) + ":"
     duration_str += str((stream_duration % 3600) // 60).zfill(2) + ":"
     duration_str += str(stream_duration % 60).zfill(2)
@@ -222,7 +274,7 @@ def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
         f"<dc:description>Music Assistant</dc:description>"
         f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
         "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
-        f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(uri)}</res>'
+        f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP={"10" if supports_time_seek else "01"};DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(uri)}</res>'
         '<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">RINCON_AssociatedZPUDN</desc>'
         "</item>"
         "</DIDL-Lite>"

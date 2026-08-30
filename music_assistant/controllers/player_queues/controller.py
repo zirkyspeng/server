@@ -1303,7 +1303,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             elapsed_time = player_elapsed * speed
             if queue.current_item and queue.current_item.streamdetails:
                 if seek_pos := queue.current_item.streamdetails.seek_position:
-                    elapsed_time += seek_pos
+                    if not self._player_reports_absolute_stream_time(player):
+                        elapsed_time += seek_pos
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         queue.playback_speed = speed

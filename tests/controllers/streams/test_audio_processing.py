@@ -45,6 +45,7 @@ from music_assistant.controllers.streams.audio_processing import (
 )
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.helpers.dsp import ComplexFilter
+from music_assistant.helpers.upnp import TIME_SEEK_HEADER
 
 
 def _format(
@@ -1153,6 +1154,31 @@ async def test_single_stream_handler_shares_native_group_members(
     assert controller.audio.get_player_output_plan.call_args.kwargs["shared_player_ids"] is (
         group_members
     )
+
+
+@pytest.mark.asyncio
+async def test_single_stream_handler_serves_dlna_time_seek(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A time-seek request starts at its absolute offset and echoes the DLNA range."""
+    controller, request, _group_members = _native_stream_handler_context(monkeypatch)
+    player = controller.mass.players.get_player.return_value
+    player.supports_http_time_seek = True
+    request.headers = {TIME_SEEK_HEADER: "npt=120-"}
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    response_type = MagicMock(return_value=response)
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.web.StreamResponse", response_type
+    )
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert controller.audio.get_queue_item_stream.call_args.kwargs["seek_position"] == 120
+    headers = response_type.call_args.kwargs["headers"]
+    assert headers["contentFeatures.dlna.org"].startswith("DLNA.ORG_OP=10;")
+    assert headers[TIME_SEEK_HEADER] == "npt=120.000-179.999/180.000"
 
 
 @pytest.mark.asyncio

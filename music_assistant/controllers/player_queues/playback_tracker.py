@@ -67,6 +67,13 @@ UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUN
 class PlaybackTrackerMixin(_PlayerQueuesBase):
     """Reconcile a queue's state against its player and drive playback-progress reporting."""
 
+    def _player_reports_absolute_stream_time(self, player: Player) -> bool:
+        """Return whether the active output reports media time instead of stream time."""
+        protocol_player = player
+        if player.active_output_protocol and player.active_output_protocol != "native":
+            protocol_player = self.mass.players.get_player(player.active_output_protocol) or player
+        return protocol_player.supports_http_time_seek is True
+
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
         """
         Update the current item/index/elapsed time on the queue from the player state.
@@ -112,6 +119,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     current_item
                     and current_item.streamdetails
                     and current_item.streamdetails.seek_position
+                    and not self._player_reports_absolute_stream_time(player)
                 ):
                     elapsed_time += current_item.streamdetails.seek_position
             queue.elapsed_time = elapsed_time

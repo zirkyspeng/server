@@ -62,6 +62,7 @@ from music_assistant.constants import (
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES,
     DLNA_CONTENT_FEATURES_REALTIME,
+    DLNA_CONTENT_FEATURES_TIME_SEEK,
     ICY_HEADERS,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
@@ -109,6 +110,11 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_stream,
 )
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
+from music_assistant.helpers.upnp import (
+    TIME_SEEK_HEADER,
+    format_time_seek_range,
+    parse_time_seek_range,
+)
 from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
@@ -756,6 +762,35 @@ class StreamsController(CoreController):
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
                     )
 
+            stream_duration = float(queue_item.duration or queue_item.streamdetails.duration or 0)
+            http_time_seek_enabled = (
+                player.supports_http_time_seek is True
+                and queue_item.media_type == MediaType.TRACK
+                and stream_duration > 0
+            )
+            effective_seek_position = int(queue_item.streamdetails.seek_position)
+            requested_time_seek_end: float | None = None
+            if time_seek_request := request.headers.get(TIME_SEEK_HEADER):
+                if not http_time_seek_enabled:
+                    raise web.HTTPNotAcceptable(reason="DLNA time seek is not supported")
+                try:
+                    requested_time_seek_start, requested_time_seek_end = parse_time_seek_range(
+                        time_seek_request, stream_duration
+                    )
+                except OverflowError as err:
+                    raise web.HTTPRequestRangeNotSatisfiable(reason=str(err)) from err
+                except ValueError as err:
+                    raise web.HTTPBadRequest(reason=str(err)) from err
+                # The audio pipeline currently seeks at whole-second precision. Echo the
+                # effective value, not a fractional request the stream could not honour.
+                effective_seek_position = int(requested_time_seek_start)
+                self.logger.debug(
+                    "Serving DLNA time seek for %s at %s seconds (request: %s)",
+                    queue_item.name,
+                    effective_seek_position,
+                    time_seek_request,
+                )
+
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
@@ -800,7 +835,11 @@ class StreamsController(CoreController):
             dlna_features = (
                 DLNA_CONTENT_FEATURES_REALTIME
                 if queue_item.media_type != MediaType.TRACK
-                else DLNA_CONTENT_FEATURES
+                else (
+                    DLNA_CONTENT_FEATURES_TIME_SEEK
+                    if http_time_seek_enabled
+                    else DLNA_CONTENT_FEATURES
+                )
             )
             headers = {
                 **DEFAULT_STREAM_HEADERS,
@@ -808,6 +847,17 @@ class StreamsController(CoreController):
                 "contentFeatures.dlna.org": dlna_features,
                 "Content-Type": get_mime_type(output_format.output_format_str),
             }
+            if http_time_seek_enabled and (
+                TIME_SEEK_HEADER in request.headers or effective_seek_position > 0
+            ):
+                response_end = (
+                    requested_time_seek_end
+                    if requested_time_seek_end is not None
+                    else max(stream_duration - 0.001, float(effective_seek_position))
+                )
+                headers[TIME_SEEK_HEADER] = format_time_seek_range(
+                    float(effective_seek_position), response_end, stream_duration
+                )
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
@@ -818,8 +868,10 @@ class StreamsController(CoreController):
             elif http_profile == "forced_content_length" and queue_item.duration:
                 # estimate content length based on effective duration
                 # account for seek position (e.g., crossfade from previous track)
-                seek_pos = queue_item.streamdetails.seek_position if queue_item.streamdetails else 0
-                effective_duration = max(queue_item.duration - seek_pos, 1)
+                if requested_time_seek_end is not None:
+                    effective_duration = max(requested_time_seek_end - effective_seek_position, 1)
+                else:
+                    effective_duration = max(queue_item.duration - effective_seek_position, 1)
                 # use cached actual bytes-per-second if available (from a previous stream)
                 resp.content_length = await get_content_length(
                     self.mass, queue_item.uri, output_format, effective_duration
@@ -860,7 +912,7 @@ class StreamsController(CoreController):
                 audio_input = self.audio.get_queue_item_stream(
                     queue_item=queue_item,
                     pcm_format=pcm_format,
-                    seek_position=int(queue_item.streamdetails.seek_position),
+                    seek_position=effective_seek_position,
                     playback_speed=cast(
                         "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                     ),
@@ -912,6 +964,14 @@ class StreamsController(CoreController):
                         "-readrate_initial_burst",
                         SINGLE_ITEM_READRATE_INITIAL_BURST,
                     ],
+                    extra_output_args=(
+                        [
+                            "-t",
+                            f"{requested_time_seek_end - effective_seek_position:.3f}",
+                        ]
+                        if requested_time_seek_end is not None
+                        else None
+                    ),
                 )
             first_chunk_received = False
             bytes_sent = 0
