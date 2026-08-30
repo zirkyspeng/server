@@ -50,7 +50,7 @@ def test_time_seek_metadata_keeps_full_duration() -> None:
     metadata = create_didl_metadata(media, "http://192.168.1.2/item.flac", supports_time_seek=True)
 
     assert 'duration="00:05:00"' in metadata
-    assert "DLNA.ORG_OP=10" in metadata
+    assert "DLNA.ORG_OP=11" in metadata
 
 
 def test_regular_metadata_keeps_remaining_stream_duration() -> None:
