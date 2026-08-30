@@ -1231,6 +1231,41 @@ async def test_restarted_stream_reports_absolute_dlna_offset(
 
 
 @pytest.mark.asyncio
+async def test_single_stream_handler_serves_marantz_byte_seek_as_partial_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Marantz range reconnect receives a partial response at the MA seek target."""
+    controller, request, _group_members = _native_stream_handler_context(monkeypatch)
+    player = controller.mass.players.get_player.return_value
+    player.supports_http_time_seek = True
+    player.get_config_value.return_value = "forced_content_length"
+    queue = controller.mass.player_queues.get.return_value
+    queue.elapsed_time = 120
+    request.headers = {"Range": "bytes=600-"}
+    content_length = AsyncMock(return_value=1000)
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.get_content_length", content_length
+    )
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    response_type = MagicMock(return_value=response)
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.web.StreamResponse", response_type
+    )
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert controller.audio.get_queue_item_stream.call_args.kwargs["seek_position"] == 120
+    assert response_type.call_args.kwargs["status"] == 206
+    assert response_type.call_args.kwargs["reason"] == "Partial Content"
+    headers = response_type.call_args.kwargs["headers"]
+    assert headers["Content-Range"] == "bytes 600-999/1000"
+    assert headers[TIME_SEEK_HEADER] == "npt=120.000-179.999/180.000"
+    assert response.content_length == 400
+
+
+@pytest.mark.asyncio
 async def test_flow_stream_handler_shares_native_group_members(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1870,6 +1905,7 @@ def _native_stream_handler_context(
     queue_item = SimpleNamespace(
         queue_id="queue-1",
         queue_item_id="item-1",
+        uri="library://track/1",
         name="Track",
         duration=180,
         streamdetails=streamdetails,
@@ -1882,6 +1918,7 @@ def _native_stream_handler_context(
         queue_id="queue-1",
         display_name="Queue",
         current_item=queue_item,
+        elapsed_time=0,
         crossfade_enabled=False,
         overlay_enabled=False,
         overlay_source=None,

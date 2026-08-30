@@ -648,7 +648,9 @@ async def get_content_length(
     :param output_format: The output audio format.
     :param seconds: Duration in seconds to estimate.
     """
-    cache_key = f"{uri}/{get_output_format_key(output_format)}"
+    # v2 excludes measurements from older servers which could cache a player-aborted
+    # partial transfer as though it were the complete dynamically encoded object.
+    cache_key = f"v2/{uri}/{get_output_format_key(output_format)}"
     cached: dict[str, float] | None = await mass.cache.get(
         cache_key,
         provider=CONTENT_LENGTH_CACHE_PROVIDER,
@@ -683,7 +685,7 @@ async def store_content_length_in_cache(
     """
     if seconds_streamed < 10 or content_size < 1000:
         return
-    cache_key = f"{uri}/{get_output_format_key(output_format)}"
+    cache_key = f"v2/{uri}/{get_output_format_key(output_format)}"
     await mass.cache.set(
         cache_key,
         {"size": content_size, "duration": seconds_streamed},

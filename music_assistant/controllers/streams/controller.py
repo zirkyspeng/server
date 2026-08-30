@@ -770,13 +770,21 @@ class StreamsController(CoreController):
             )
             effective_seek_position = int(queue_item.streamdetails.seek_position)
             requested_time_seek_end: float | None = None
-            if byte_range_request := request.headers.get("Range"):
+            byte_range_value = request.headers.get("Range")
+            byte_range_request = byte_range_value if isinstance(byte_range_value, str) else None
+            if byte_range_request:
                 self.logger.debug(
                     "Received DLNA byte-range request for %s: %s",
                     queue_item.name,
                     byte_range_request,
                 )
-            if time_seek_request := request.headers.get(TIME_SEEK_HEADER):
+                if not http_time_seek_enabled:
+                    # Preserve the historical full-response fallback for unrelated
+                    # players which happen to send a Range header.
+                    byte_range_request = None
+            time_seek_value = request.headers.get(TIME_SEEK_HEADER)
+            time_seek_request = time_seek_value if isinstance(time_seek_value, str) else None
+            if time_seek_request:
                 if not http_time_seek_enabled:
                     raise web.HTTPNotAcceptable(reason="DLNA time seek is not supported")
                 try:
@@ -832,6 +840,55 @@ class StreamsController(CoreController):
                 media_type=queue_item.media_type,
             )
 
+            http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
+            full_content_length: int | None = None
+            byte_range_start: int | None = None
+            if byte_range_request:
+                # Marantz renderers expose AVTransport/Seek only after seeing
+                # Accept-Ranges, then reconnect with an open-ended byte range even
+                # though the actual seek command uses REL_TIME. The outgoing FLAC
+                # stream is generated dynamically, so the requested byte offset is
+                # only a transport cursor; use the queue's already-published seek
+                # target to produce a fresh, valid FLAC stream at the exact position.
+                if (
+                    not byte_range_request.startswith("bytes=")
+                    or "," in byte_range_request
+                    or not byte_range_request.endswith("-")
+                ):
+                    raise web.HTTPBadRequest(reason="Only one open-ended byte range is supported")
+                try:
+                    byte_range_start = int(byte_range_request[6:-1])
+                except ValueError as err:
+                    raise web.HTTPBadRequest(reason="Invalid byte range") from err
+                full_content_length = await get_content_length(
+                    self.mass, queue_item.uri, output_format, stream_duration
+                )
+                if byte_range_start < 0 or byte_range_start >= full_content_length:
+                    raise web.HTTPRequestRangeNotSatisfiable(
+                        headers={"Content-Range": f"bytes */{full_content_length}"}
+                    )
+                if time_seek_request is None:
+                    queue_seek_position = (
+                        float(queue.elapsed_time) if queue.current_item is queue_item else 0.0
+                    )
+                    if 0 < queue_seek_position < stream_duration:
+                        effective_seek_position = int(queue_seek_position)
+                        seek_source = "queue timeline"
+                    else:
+                        effective_seek_position = int(
+                            stream_duration * byte_range_start / full_content_length
+                        )
+                        seek_source = "byte-range estimate"
+                    self.logger.debug(
+                        "Serving DLNA byte seek for %s at %s seconds from %s "
+                        "(request: %s, total length: %s)",
+                        queue_item.name,
+                        effective_seek_position,
+                        seek_source,
+                        byte_range_request,
+                        full_content_length,
+                    )
+
             # prepare request, add some DLNA/UPNP compatible headers
             # icy-name is sanitized (all control chars, not just newlines) to avoid a
             # "Potential header injection attack" ValueError by aiohttp
@@ -865,11 +922,20 @@ class StreamsController(CoreController):
                 headers[TIME_SEEK_HEADER] = format_time_seek_range(
                     float(effective_seek_position), response_end, stream_duration
                 )
+                if byte_range_start is not None and full_content_length is not None:
+                    headers["Content-Range"] = (
+                        f"bytes {byte_range_start}-{full_content_length - 1}/{full_content_length}"
+                    )
 
-            resp = web.StreamResponse(status=200, reason="OK", headers=headers)
+            resp = web.StreamResponse(
+                status=206 if byte_range_start is not None else 200,
+                reason="Partial Content" if byte_range_start is not None else "OK",
+                headers=headers,
+            )
             resp.content_type = get_mime_type(output_format.output_format_str)
-            http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
-            if http_profile == "forced_content_length" and not queue_item.duration:
+            if byte_range_start is not None and full_content_length is not None:
+                resp.content_length = full_content_length - byte_range_start
+            elif http_profile == "forced_content_length" and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
             elif http_profile == "forced_content_length" and queue_item.duration:
@@ -981,6 +1047,7 @@ class StreamsController(CoreController):
                     ),
                 )
             first_chunk_received = False
+            stream_completed = True
             bytes_sent = 0
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
@@ -1000,6 +1067,7 @@ class StreamsController(CoreController):
                                 queue_item.name,
                                 session_id,
                             )
+                            stream_completed = False
                             break
                         try:
                             await resp.write(chunk)
@@ -1030,6 +1098,7 @@ class StreamsController(CoreController):
                                     bytes_sent,
                                     resp.content_length,
                                 )
+                            stream_completed = False
                             break
             finally:
                 self._active_output_streams -= 1
@@ -1041,7 +1110,10 @@ class StreamsController(CoreController):
                     queue.display_name,
                 )
             elif (
-                bytes_sent > 0
+                stream_completed
+                and byte_range_start is None
+                and effective_seek_position == 0
+                and bytes_sent > 0
                 and queue_item.streamdetails
                 and queue_item.streamdetails.seconds_streamed
                 and queue_item.duration
