@@ -9,7 +9,7 @@ from datetime import timedelta
 from http.client import HTTPConnection, HTTPException
 from typing import Any, Concatenate, TYPE_CHECKING
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError
 
@@ -280,6 +280,7 @@ class DLNAPlayer(Player):
             url,
             supports_time_seek=self.supports_http_time_seek,
             ascii_only=self._uses_software_next(),
+            image_url=self._metadata_image_url(media.image_url),
         )
         title = media.title or media.uri
         # optimistically set the state here to help in case of a player
@@ -308,10 +309,6 @@ class DLNAPlayer(Player):
                     CurrentURI=url,
                     CurrentURIMetaData=didl_metadata,
                 )
-                # Some Marantz inputs take longer to inspect a FLAC before the
-                # transport is ready. Starting immediately can make playback
-                # succeed while the HEOS display misses the metadata update.
-                await self.device.async_wait_for_can_play(10)
                 await self._async_call_avt_fresh("Play", InstanceID=0, Speed="1")
             else:
                 await self.device.async_set_transport_uri(url, title, didl_metadata)
@@ -344,6 +341,7 @@ class DLNAPlayer(Player):
             url,
             supports_time_seek=self.supports_http_time_seek,
             ascii_only=self._uses_software_next(),
+            image_url=self._metadata_image_url(media.image_url),
         )
         title = media.title or media.uri
         try:
@@ -658,6 +656,18 @@ class DLNAPlayer(Player):
     def _uses_software_next(self) -> bool:
         """Return whether this player needs a fresh transport URI for every track."""
         return bool(self.device and "marantz" in (self.device.manufacturer or "").lower())
+
+    def _metadata_image_url(self, image_url: str | None) -> str | None:
+        """Return a renderer-compatible image URL for DIDL metadata."""
+        if not self._uses_software_next() or not image_url:
+            return image_url
+        parsed_url = urlparse(image_url)
+        if not parsed_url.path.startswith("/imageproxy/"):
+            return image_url
+        query = dict(parse_qsl(parsed_url.query, keep_blank_values=True))
+        query["size"] = "256"
+        query["fmt"] = "jpeg"
+        return parsed_url._replace(query=urlencode(query)).geturl()
 
     async def _play_enqueued_media_after_stop(
         self,
