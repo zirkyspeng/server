@@ -126,6 +126,28 @@ async def test_seek_uses_active_output_protocol_native_seek() -> None:
     assert queue.elapsed_time == 30
 
 
+async def test_seek_restarts_time_seek_stream_when_protocol_hides_native_seek() -> None:
+    """A Marantz-like protocol rebuilds the stream even though it has an absolute timeline."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+    parent_player = MagicMock()
+    parent_player.active_output_protocol = "protocol-player"
+    protocol_player = MagicMock()
+    protocol_player.supports_http_time_seek = True
+    protocol_player.state.supported_features = set()
+    protocol_player.seek = AsyncMock()
+    ctrl.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda player_id, *_args: (
+            parent_player if player_id == QUEUE_ID else protocol_player
+        )
+    )
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+
+    await ctrl.seek(QUEUE_ID, 30)
+
+    protocol_player.seek.assert_not_awaited()
+    ctrl.play_index.assert_awaited_once_with(QUEUE_ID, 0, seek_position=30)
+
+
 async def test_play_index_retry_fallback_discards_failed_items_seek_position() -> None:
     """Falling back to another item after a load failure zeroes elapsed_time, not seek_position."""
     ctrl, queue, signals = _controller_with_stale_queue()

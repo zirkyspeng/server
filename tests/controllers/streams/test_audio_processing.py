@@ -1182,6 +1182,31 @@ async def test_single_stream_handler_serves_dlna_time_seek(
 
 
 @pytest.mark.asyncio
+async def test_restarted_stream_reports_absolute_dlna_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A software-restarted stream tells the renderer its absolute media offset."""
+    controller, request, _group_members = _native_stream_handler_context(monkeypatch)
+    player = controller.mass.players.get_player.return_value
+    player.supports_http_time_seek = True
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.streamdetails.seek_position = 120
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    response_type = MagicMock(return_value=response)
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.web.StreamResponse", response_type
+    )
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert controller.audio.get_queue_item_stream.call_args.kwargs["seek_position"] == 120
+    headers = response_type.call_args.kwargs["headers"]
+    assert headers[TIME_SEEK_HEADER] == "npt=120.000-179.999/180.000"
+
+
+@pytest.mark.asyncio
 async def test_flow_stream_handler_shares_native_group_members(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
