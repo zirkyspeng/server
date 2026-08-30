@@ -543,8 +543,11 @@ class DLNAPlayer(Player):
             supported_features.add(PlayerFeature.VOLUME_MUTE)
         if self.device.has_pause:
             supported_features.add(PlayerFeature.PAUSE)
-        if self._uses_software_next() and self.device._action("AVT", "Seek") is not None:
-            supported_features.add(PlayerFeature.SEEK)
+        # Marantz advertises AVTransport/Seek and returns HTTP 200 for REL_TIME, but
+        # silently ignores it for MA's on-the-fly streams (which correctly advertise
+        # Accept-Ranges: none / DLNA.ORG_OP=00).  Do not expose the unusable native
+        # feature: the queue controller will restart the stream at the requested offset
+        # and its playback tracker will add that offset back to the media timeline.
         self._attr_supported_features = supported_features
 
     def _uses_software_next(self) -> bool:

@@ -166,22 +166,13 @@ async def test_marantz_software_next_recovers_when_playing_stalls_at_duration() 
     player.play_media.assert_awaited_once_with(next_media)
 
 
-async def test_marantz_uses_native_relative_time_seek() -> None:
-    """Marantz seek keeps the original stream and its complete media timeline."""
+def test_marantz_does_not_advertise_unusable_native_seek() -> None:
+    """Marantz falls back to a restarted stream because REL_TIME is silently ignored."""
     player = _player("Marantz")
-    player._async_call_avt_fresh = AsyncMock()  # type: ignore[method-assign]
 
     player._set_player_features()
-    await player.seek(61)
 
-    assert PlayerFeature.SEEK in player.supported_features
-    player._async_call_avt_fresh.assert_awaited_once_with(
-        "Seek",
-        InstanceID=0,
-        Unit="REL_TIME",
-        Target="00:01:01",
-    )
-    assert player.elapsed_time == 61
+    assert PlayerFeature.SEEK not in player.supported_features
 
 
 def test_marantz_does_not_advertise_gapless_for_software_transitions() -> None:
