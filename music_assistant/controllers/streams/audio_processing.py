@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.audio_processing import (
     ActiveSourceAudioDetails,
+    AudioDSPDetails,
     AudioFidelity,
     AudioNormalizationDetails,
     AudioNormalizationMeasurementSource,
@@ -314,6 +315,47 @@ class AudioProcessingManager:
             and queue.current_item
             and queue_item_id in (None, queue.current_item.queue_item_id)
         ):
+            self.mass.player_queues.signal_update(queue_id)
+        return True
+
+    def publish_passthrough(
+        self,
+        *,
+        queue_id: str,
+        session_id: str,
+        queue_item_id: str,
+        streamdetails: StreamDetails,
+        player_ids: Iterable[str],
+    ) -> bool:
+        """
+        Publish a direct bit-perfect source-to-player path.
+
+        :param queue_id: Queue that owns the playback session.
+        :param session_id: Current queue playback session.
+        :param queue_item_id: Queue item served without processing.
+        :param streamdetails: Source stream details to annotate.
+        :param player_ids: Players receiving the identical passthrough stream.
+        :return: Whether the published chain changed.
+        """
+        self.start_session(queue_id, session_id)
+        quality = get_audio_quality(streamdetails.audio_format)
+        chain = AudioProcessingChain(
+            input_fidelity=AudioFidelity(quality=quality),
+            queue_processing=AudioQueueProcessing(),
+            outputs=[
+                AudioOutputDetails(
+                    player_ids=sorted(set(player_ids)),
+                    dsp=AudioDSPDetails(state=DSPState.DISABLED),
+                    output_format=deepcopy(streamdetails.audio_format),
+                    fidelity=AudioFidelity(quality=quality, bit_perfect=True),
+                )
+            ],
+        )
+        if streamdetails.audio_processing == chain:
+            return False
+        streamdetails.audio_processing = chain
+        queue = self.mass.player_queues.get(queue_id)
+        if queue and queue.current_item and queue.current_item.queue_item_id == queue_item_id:
             self.mass.player_queues.signal_update(queue_id)
         return True
 

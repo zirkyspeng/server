@@ -67,3 +67,23 @@ def test_regular_metadata_keeps_remaining_stream_duration() -> None:
 
     assert 'duration="00:01:00"' in metadata
     assert "DLNA.ORG_OP=01" in metadata
+
+
+def test_ascii_metadata_folds_smart_punctuation_for_legacy_renderers() -> None:
+    """Legacy renderers receive safe text instead of truncated Unicode entities."""
+    media = PlayerMedia(
+        uri="library://track/1",
+        media_type=MediaType.TRACK,
+        queue_item_id="item-1",
+        title="Tears Don\u2019t Fall \u2014 D\u00e9mo",
+        duration=300,
+    )
+
+    metadata = create_didl_metadata(
+        media,
+        "http://192.168.1.2/item.flac",
+        ascii_only=True,
+    )
+
+    assert "Tears Don't Fall - Demo" in metadata
+    assert "&#8217;" not in metadata

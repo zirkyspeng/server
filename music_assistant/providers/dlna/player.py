@@ -276,7 +276,10 @@ class DLNAPlayer(Player):
             await self.stop()
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(
-            media, url, supports_time_seek=self.supports_http_time_seek
+            media,
+            url,
+            supports_time_seek=self.supports_http_time_seek,
+            ascii_only=self._uses_software_next(),
         )
         title = media.title or media.uri
         # optimistically set the state here to help in case of a player
@@ -333,7 +336,10 @@ class DLNAPlayer(Player):
             return
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(
-            media, url, supports_time_seek=self.supports_http_time_seek
+            media,
+            url,
+            supports_time_seek=self.supports_http_time_seek,
+            ascii_only=self._uses_software_next(),
         )
         title = media.title or media.uri
         try:
