@@ -619,13 +619,11 @@ class DLNAPlayer(Player):
             supported_features.add(PlayerFeature.PAUSE)
         if self.device.has_next and self.device.has_previous:
             supported_features.add(PlayerFeature.NEXT_PREVIOUS)
-        # Marantz accepts AVTransport/Seek with HTTP 200 but never reconnects to
-        # the stream at the requested TimeSeekRange. Leave native SEEK hidden so
-        # the queue controller rebuilds the stream at the target offset instead.
-        # TimeSeekRange still marks that rebuilt HTTP stream as seekable, but the
-        # renderer reports time relative to its new start; the queue adds the
-        # stream's seek offset to restore the full media timeline.
         if self.device.has_seek_rel_time and not self.supports_http_time_seek:
+            supported_features.add(PlayerFeature.SEEK)
+        # Marantz needs the initial HTTP response to advertise its complete
+        # TimeSeekRange before AVTransport/Seek can preserve the media timeline.
+        if self.supports_http_time_seek and self.device._action("AVT", "Seek") is not None:
             supported_features.add(PlayerFeature.SEEK)
         self._attr_supported_features = supported_features
 
