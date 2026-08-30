@@ -1182,6 +1182,28 @@ async def test_single_stream_handler_serves_dlna_time_seek(
 
 
 @pytest.mark.asyncio
+async def test_single_stream_handler_advertises_initial_dlna_time_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A seekable renderer sees the full NPT range before it issues AVTransport/Seek."""
+    controller, request, _group_members = _native_stream_handler_context(monkeypatch)
+    player = controller.mass.players.get_player.return_value
+    player.supports_http_time_seek = True
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    response_type = MagicMock(return_value=response)
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.web.StreamResponse", response_type
+    )
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_item_stream(request)
+
+    headers = response_type.call_args.kwargs["headers"]
+    assert headers[TIME_SEEK_HEADER] == "npt=0.000-179.999/180.000"
+
+
+@pytest.mark.asyncio
 async def test_restarted_stream_reports_absolute_dlna_offset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

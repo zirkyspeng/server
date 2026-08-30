@@ -847,9 +847,7 @@ class StreamsController(CoreController):
                 "contentFeatures.dlna.org": dlna_features,
                 "Content-Type": get_mime_type(output_format.output_format_str),
             }
-            if http_time_seek_enabled and (
-                TIME_SEEK_HEADER in request.headers or effective_seek_position > 0
-            ):
+            if http_time_seek_enabled:
                 response_end = (
                     requested_time_seek_end
                     if requested_time_seek_end is not None

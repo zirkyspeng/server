@@ -208,14 +208,14 @@ async def test_marantz_software_next_recovers_when_playing_stalls_at_duration() 
     player.play_media.assert_awaited_once_with(next_media)
 
 
-def test_marantz_uses_software_seek_with_absolute_http_timeline() -> None:
-    """Marantz restarts at the target because it ignores successful REL_TIME calls."""
+def test_marantz_advertises_seek_with_initial_http_time_range() -> None:
+    """Marantz REL_TIME seek is usable after the initial response advertises its NPT range."""
     player = _player("Marantz")
 
     player._set_player_features()
 
     assert player.supports_http_time_seek
-    assert PlayerFeature.SEEK not in player.supported_features
+    assert PlayerFeature.SEEK in player.supported_features
 
 
 def test_marantz_does_not_advertise_gapless_for_software_transitions() -> None:
