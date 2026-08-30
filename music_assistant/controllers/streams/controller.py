@@ -854,6 +854,9 @@ class StreamsController(CoreController):
                 "Content-Type": get_mime_type(output_format.output_format_str),
             }
             if http_time_seek_enabled:
+                # Some renderers gate AVTransport/Seek on the HTTP byte-range
+                # advertisement even when they later reconnect with an NPT range.
+                headers["Accept-Ranges"] = "bytes"
                 response_end = (
                     requested_time_seek_end
                     if requested_time_seek_end is not None
