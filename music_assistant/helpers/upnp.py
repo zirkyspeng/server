@@ -274,7 +274,7 @@ def create_didl_metadata(
         f"<dc:description>Music Assistant</dc:description>"
         f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
         "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
-        f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP={"10" if supports_time_seek else "01"};DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(uri)}</res>'
+        f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP={"11" if supports_time_seek else "01"};DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(uri)}</res>'
         '<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">RINCON_AssociatedZPUDN</desc>'
         "</item>"
         "</DIDL-Lite>"

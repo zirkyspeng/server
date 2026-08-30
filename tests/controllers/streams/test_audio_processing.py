@@ -1177,7 +1177,7 @@ async def test_single_stream_handler_serves_dlna_time_seek(
 
     assert controller.audio.get_queue_item_stream.call_args.kwargs["seek_position"] == 120
     headers = response_type.call_args.kwargs["headers"]
-    assert headers["contentFeatures.dlna.org"].startswith("DLNA.ORG_OP=10;")
+    assert headers["contentFeatures.dlna.org"].startswith("DLNA.ORG_OP=11;")
     assert headers[TIME_SEEK_HEADER] == "npt=120.000-179.999/180.000"
 
 

@@ -770,6 +770,12 @@ class StreamsController(CoreController):
             )
             effective_seek_position = int(queue_item.streamdetails.seek_position)
             requested_time_seek_end: float | None = None
+            if byte_range_request := request.headers.get("Range"):
+                self.logger.debug(
+                    "Received DLNA byte-range request for %s: %s",
+                    queue_item.name,
+                    byte_range_request,
+                )
             if time_seek_request := request.headers.get(TIME_SEEK_HEADER):
                 if not http_time_seek_enabled:
                     raise web.HTTPNotAcceptable(reason="DLNA time seek is not supported")
