@@ -47,6 +47,7 @@ from music_assistant.controllers.streams.audio_processing import (
     get_audio_quality,
     get_normalization_details,
 )
+from music_assistant.controllers.streams.constants import output_pacing_args
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.helpers.dsp import ComplexFilter
 from music_assistant.helpers.upnp import TIME_SEEK_HEADER
@@ -1280,6 +1281,41 @@ async def test_single_stream_handler_serves_dlna_time_seek(
     assert headers["contentFeatures.dlna.org"].startswith("DLNA.ORG_OP=11;")
     assert headers["Accept-Ranges"] == "bytes"
     assert headers[TIME_SEEK_HEADER] == "npt=120.000-179.999/180.000"
+
+
+@pytest.mark.parametrize(
+    ("time_range", "output_args"),
+    [("npt=120-135", ["-t", "15.000"]), ("npt=120-", None)],
+)
+@pytest.mark.asyncio
+async def test_dlna_time_seek_preserves_output_pacing(
+    monkeypatch: pytest.MonkeyPatch, time_range: str, output_args: list[str] | None
+) -> None:
+    """Marantz seeks keep upstream pacing while limiting a requested time range."""
+    controller, request, _group_members = _native_stream_handler_context(monkeypatch)
+    player = controller.mass.players.get_player.return_value
+    player.provider.domain = "dlna"
+    player.supports_http_time_seek = True
+    request.headers = {TIME_SEEK_HEADER: time_range}
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.web.StreamResponse",
+        MagicMock(return_value=response),
+    )
+    controller.audio.get_player_output_plan.side_effect = None
+    controller.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
+    ffmpeg_stream = MagicMock(side_effect=_OutputPlanRequested)
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.get_ffmpeg_stream", ffmpeg_stream
+    )
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert controller.audio.get_queue_item_stream.call_args.kwargs["seek_position"] == 120
+    assert ffmpeg_stream.call_args.kwargs["extra_input_args"] == output_pacing_args("default")
+    assert ffmpeg_stream.call_args.kwargs["extra_output_args"] == output_args
 
 
 @pytest.mark.asyncio
