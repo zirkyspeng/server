@@ -3907,6 +3907,10 @@ class StreamsAudio:
         final_pass = False
         last_capacity_error: ProviderStreamLimitError | None = None
         last_failed_streamdetails: StreamDetails | None = None
+        # details cached on the queue item may have outlived the source they point to
+        # (e.g. an ephemeral manifest route or a signed URL); refresh those once on failure
+        resolved_here = False
+        refreshed_stale = False
         while True:
             if queue_item.streamdetails is None or (
                 queue_item.streamdetails.provider in busy_instances and not final_pass
@@ -3919,6 +3923,7 @@ class StreamsAudio:
                         prefer_album_loudness=prefer_album_loudness,
                         excluded_provider_instances=busy_instances,
                     )
+                    resolved_here = True
                 except (AudioError, MediaNotFoundError) as err:
                     if last_capacity_error is None:
                         raise
@@ -4033,7 +4038,25 @@ class StreamsAudio:
                         busy_instances.clear()
                         final_pass = True
                 queue_item.streamdetails = None
-            except AudioError:
+            except AudioError as err:
+                if (
+                    last_capacity_error is None
+                    and not resolved_here
+                    and not refreshed_stale
+                    # without a media item the details were handed in and cannot be re-resolved
+                    and queue_item.media_item is not None
+                ):
+                    self.logger.warning(
+                        "Source for %s failed with cached stream details (%s), "
+                        "retrying with fresh stream details",
+                        queue_item.name,
+                        err,
+                    )
+                    refreshed_stale = True
+                    # restored by the resolve step should the refresh itself fail
+                    last_failed_streamdetails = streamdetails
+                    queue_item.streamdetails = None
+                    continue
                 if last_capacity_error is None or final_pass:
                     raise
                 # a broken alternate must not turn a transient capacity miss into a hard

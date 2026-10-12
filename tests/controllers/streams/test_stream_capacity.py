@@ -726,3 +726,82 @@ async def test_a_consumer_leaving_between_attempts_ends_the_reselection(
 
     assert result is None
     assert get_buffer.await_count == 1
+
+async def test_cached_streamdetails_are_refreshed_once_after_a_source_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Details reused from an earlier call may point to a vanished source: refresh them once."""
+    queue_item = _queue_item(_mapping(FALLBACK_INSTANCE))
+    stale_details = _streamdetails(FALLBACK_INSTANCE)
+    queue_item.streamdetails = stale_details
+    audio = StreamsAudio(_mass())
+    fresh_details = _streamdetails(FALLBACK_INSTANCE)
+    audio.get_stream_details = AsyncMock(return_value=fresh_details)  # type: ignore[method-assign]
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[AudioError("HTTP error 404 Not Found"), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    assert queue_item.streamdetails is fresh_details
+    audio.get_stream_details.assert_awaited_once()
+    assert get_buffer.await_args_list[0].kwargs["streamdetails"] is stale_details
+    assert get_buffer.await_args_list[1].kwargs["streamdetails"] is fresh_details
+
+
+async def test_freshly_resolved_streamdetails_are_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure of details resolved within the same call surfaces directly."""
+    queue_item = _queue_item(_mapping(FALLBACK_INSTANCE))
+    audio = StreamsAudio(_mass())
+    audio.get_stream_details = AsyncMock(return_value=_streamdetails(FALLBACK_INSTANCE))  # type: ignore[method-assign]
+    get_buffer = AsyncMock(side_effect=AudioError("source is broken"))
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    with pytest.raises(AudioError, match="source is broken"):
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert get_buffer.await_count == 1
+    audio.get_stream_details.assert_awaited_once()
+
+
+async def test_refreshed_streamdetails_failing_again_surface_the_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stale-details refresh happens only once; a second failure is raised."""
+    queue_item = _queue_item(_mapping(FALLBACK_INSTANCE))
+    queue_item.streamdetails = _streamdetails(FALLBACK_INSTANCE)
+    audio = StreamsAudio(_mass())
+    fresh_details = _streamdetails(FALLBACK_INSTANCE)
+    audio.get_stream_details = AsyncMock(return_value=fresh_details)  # type: ignore[method-assign]
+    get_buffer = AsyncMock(
+        side_effect=[AudioError("stale source is gone"), AudioError("fresh source is broken")]
+    )
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    with pytest.raises(AudioError, match="fresh source is broken"):
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert get_buffer.await_count == 2
+    assert queue_item.streamdetails is fresh_details
+
+
+async def test_stale_details_survive_a_failing_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If resolving fresh details fails, the queue item keeps its previous details."""
+    queue_item = _queue_item(_mapping(FALLBACK_INSTANCE))
+    stale_details = _streamdetails(FALLBACK_INSTANCE)
+    queue_item.streamdetails = stale_details
+    audio = StreamsAudio(_mass())
+    audio.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("track is gone"))  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        AudioBuffer, "get_buffer", AsyncMock(side_effect=AudioError("stale source is gone"))
+    )
+
+    with pytest.raises(MediaNotFoundError, match="track is gone"):
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert queue_item.streamdetails is stale_details

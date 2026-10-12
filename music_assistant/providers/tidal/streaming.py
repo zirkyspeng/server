@@ -41,6 +41,13 @@ def _loudness_from_gain(value: float | None) -> float | None:
         return None
     return _REPLAYGAIN_REFERENCE_LUFS - value
 
+# Seconds by which DASH stream details expire before their manifest route,
+# so cached details are never reused once the route may have been removed.
+_DASH_EXPIRATION_MARGIN: int = 60
+
+# Default lifetime of cached stream details (StreamDetails.expiration).
+_STREAMDETAILS_EXPIRATION: int = 600
+
 
 class TidalStreamingManager:
     """Manages Tidal streaming operations."""
@@ -79,6 +86,7 @@ class TidalStreamingManager:
             stream_data = await self._fetch_playback_info(live_id, quality)
 
         # 4. Parse stream URL
+        expiration = _STREAMDETAILS_EXPIRATION
         manifest_type = stream_data.get("manifestMimeType", "")
         if manifest_type == _MANIFEST_DASH and "manifest" in stream_data:
             # Tidal returns a DASH manifest (MPD) as a base64 data: URI.
@@ -127,6 +135,9 @@ class TidalStreamingManager:
             # This MUST be outside the except block so the timer is always
             # set, even when reusing a pre-registered route.
             _schedule_cleanup()
+            # the route may vanish once its timer fires: never let the stream
+            # details (and thus this URL) be reused beyond that point
+            expiration = min(expiration, int(cleanup_ttl) - _DASH_EXPIRATION_MARGIN)
 
             url = f"{self.mass.streams.base_url}{route_path}"
             bts_codec = None
@@ -180,6 +191,8 @@ class TidalStreamingManager:
             allow_seek=True,
             loudness=loudness,
             loudness_album=loudness_album,
+
+            expiration=expiration,
         )
 
     async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:

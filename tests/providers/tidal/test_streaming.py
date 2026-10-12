@@ -78,6 +78,8 @@ async def test_get_stream_details_lossless(
     assert stream_details.stream_type == StreamType.HTTP
     assert stream_details.path == "https://example.com/stream.flac"
     assert stream_details.can_seek is True
+    # direct URLs keep the default stream details lifetime
+    assert stream_details.expiration == 600
 
     provider_mock.get_track.assert_called_with("123")
     provider_mock.api.get.assert_called_with(
@@ -210,6 +212,8 @@ async def test_get_stream_details_with_dash_manifest(
         "/tidal-dash/a3aca34e43c1737c7738507842972fa9",
         task_id="tidal-dash-cleanup-a3aca34e43c1737c7738507842972fa9",
     )
+    # the stream details expire before the route can be removed (480s - 60s margin)
+    assert stream_details.expiration == 420
 
 
 async def test_get_stream_details_with_dash_manifest_handler(
