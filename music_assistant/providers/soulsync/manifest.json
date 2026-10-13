@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "domain": "soulsync",
+  "stage": "beta",
+  "name": "SoulSync",
+  "description": "Add tracks and albums to your SoulSync wishlist and follow artists on the SoulSync watchlist, with badges for what is already in your local library.",
+  "codeowners": ["@zirkyspeng"],
+  "requirements": [],
+  "documentation": "https://github.com/Nezreka/SoulSync",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "playlist-plus"
+}

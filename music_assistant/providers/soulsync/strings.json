@@ -1,0 +1,27 @@
+{
+  "config_entries": {
+    "url": {
+      "label": "SoulSync URL",
+      "description": "Base URL of your SoulSync server, e.g. http://192.168.1.129:8008."
+    },
+    "api_key": {
+      "label": "API key",
+      "description": "SoulSync API key (Settings > API). Leave empty to use the SOULSYNC_API_KEY environment variable of the server."
+    },
+    "profile_id": {
+      "label": "SoulSync profile",
+      "description": "Id of the SoulSync profile whose wishlist and watchlist are used."
+    },
+    "skip_local_tracks": {
+      "label": "Skip tracks already in the local library",
+      "description": "When adding an album, only the tracks that are missing locally are added to the wishlist."
+    },
+    "refresh_interval": {
+      "label": "Library refresh interval (minutes)",
+      "description": "How often the SoulSync library, wishlist and watchlist are reloaded."
+    }
+  },
+  "manifest": {
+    "description": "Add tracks and albums to your SoulSync wishlist and follow artists on the SoulSync watchlist, with badges for what is already in your local library."
+  }
+}
