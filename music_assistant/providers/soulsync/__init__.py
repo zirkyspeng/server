@@ -258,7 +258,7 @@ class SoulSyncProvider(PluginProvider):
             if albums:
                 status["local"] = True
                 status["local_tracks"] = self._library.local_track_count(albums)
-                if descriptor.get("detail") or descriptor.get("uri", "").startswith("library://"):
+                if descriptor.get("detail"):
                     with suppress(MediaNotFoundError, ProviderUnavailableError, InvalidDataError):
                         total = await self._album_track_total(descriptor["uri"])
                         status["total_tracks"] = total

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 # stay below it so user actions never collide with the background indexer
 MAX_REQUESTS_PER_MINUTE = 50
 PAGE_SIZE = 200
+RATE_LIMIT_BACKOFF = 61
 
 
 class SoulSyncError(InvalidDataError):
@@ -103,6 +104,7 @@ class SoulSyncClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         paginated: bool = False,
+        retried: bool = False,
     ) -> Any:
         await self._throttle()
         try:
@@ -121,6 +123,10 @@ class SoulSyncClient:
                 status = response.status
         except (TimeoutError, aiohttp.ClientError) as err:
             raise ProviderUnavailableError(f"SoulSync is unreachable: {err}") from err
+        if status == 429 and not retried:
+            # another client (or an overlapping restart) used up the shared minute
+            await asyncio.sleep(RATE_LIMIT_BACKOFF)
+            return await self._request(method, path, params, json, paginated, retried=True)
         if not isinstance(body, dict) or not body.get("success"):
             error = (body or {}).get("error") if isinstance(body, dict) else None
             message = (error or {}).get("message") or f"HTTP {status}"

@@ -300,3 +300,15 @@ def test_api_commands_parse_frontend_payloads() -> None:
         add_handler.signature, add_handler.type_hints, {"uri": "spotify://album/1"}
     )
     assert parsed == {"uri": "spotify://album/1"}
+
+
+async def test_grid_status_does_not_load_album_tracklists() -> None:
+    """Only the item details page pays for the album tracklist lookup."""
+    provider = _create_provider()
+    provider._album_track_total = AsyncMock(return_value=17)  # type: ignore[method-assign]
+    album = _describe(_album())
+    album["uri"] = "library://album/5"
+    status = (await provider.get_status([album]))[album["uri"]]
+    assert status["state"] == "local"
+    assert status["total_tracks"] is None
+    provider._album_track_total.assert_not_awaited()
