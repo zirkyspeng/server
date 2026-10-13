@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +23,10 @@ from music_assistant.providers.soulsync import (
     SoulSyncProvider,
     _describe,
     _track_payload,
+)
+from music_assistant.providers.soulsync.client import (
+    BACKGROUND_REQUESTS_PER_MINUTE,
+    SoulSyncClient,
 )
 from music_assistant.providers.soulsync.matching import (
     LibraryIndex,
@@ -312,3 +317,14 @@ async def test_grid_status_does_not_load_album_tracklists() -> None:
     assert status["state"] == "local"
     assert status["total_tracks"] is None
     provider._album_track_total.assert_not_awaited()
+
+
+async def test_client_keeps_budget_for_user_actions() -> None:
+    """Background requests stop at their own budget while user requests still go through."""
+    client = SoulSyncClient(MagicMock(), "http://soulsync", "key", 1)
+    for _ in range(BACKGROUND_REQUESTS_PER_MINUTE):
+        await client._throttle(background=True)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(client._throttle(background=True), timeout=0.05)
+    await asyncio.wait_for(client._throttle(background=False), timeout=0.05)
+    assert len(client._request_times) == BACKGROUND_REQUESTS_PER_MINUTE + 1

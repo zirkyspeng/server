@@ -469,8 +469,18 @@ class SoulSyncProvider(PluginProvider):
 
     async def _refresh_library(self) -> None:
         async with self._refresh_lock:
-            artists = [row async for row in self._client.iter_pages("/library/artists", "artists")]
-            albums = [row async for row in self._client.iter_pages("/library/albums", "albums")]
+            artists = [
+                row
+                async for row in self._client.iter_pages(
+                    "/library/artists", "artists", background=True
+                )
+            ]
+            albums = [
+                row
+                async for row in self._client.iter_pages(
+                    "/library/albums", "albums", background=True
+                )
+            ]
             previous = dict(self._library.albums)
             self._library.set_artists(artists)
             self._library.set_albums(albums)
@@ -486,7 +496,9 @@ class SoulSyncProvider(PluginProvider):
                     continue
                 with suppress(SoulSyncError):
                     data = await self._client.get(
-                        f"/library/albums/{album['id']}/tracks", fields=TRACK_FIELDS
+                        f"/library/albums/{album['id']}/tracks",
+                        background=True,
+                        fields=TRACK_FIELDS,
                     )
                     self._library.set_album_tracks(album["id"], data.get("tracks") or [])
             self._library_ready.set()
