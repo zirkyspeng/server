@@ -16,6 +16,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
+from music_assistant.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.providers.soulsync import (
     CONF_SKIP_LOCAL,
     SoulSyncProvider,
@@ -283,3 +284,19 @@ async def test_post_wishlist_reports_outcome(
     provider._client.post = AsyncMock(return_value=(data, status))
     assert await provider._post_wishlist({"id": "sp1", "name": "x"}, "manual") == expected
     assert "sp1" in provider._wanted.track_ids
+
+
+def test_api_commands_parse_frontend_payloads() -> None:
+    """The registered API handlers accept the JSON the frontend sends."""
+    provider = _create_provider()
+    status_handler = APICommandHandler.parse("soulsync/status", provider.get_status)
+    add_handler = APICommandHandler.parse("soulsync/add", provider.add_item)
+    descriptor = dict(_describe(_track()))
+    parsed = parse_arguments(
+        status_handler.signature, status_handler.type_hints, {"items": [descriptor]}
+    )
+    assert parsed["items"][0]["uri"] == descriptor["uri"]
+    parsed = parse_arguments(
+        add_handler.signature, add_handler.type_hints, {"uri": "spotify://album/1"}
+    )
+    assert parsed == {"uri": "spotify://album/1"}

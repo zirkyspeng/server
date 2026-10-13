@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
@@ -186,7 +186,7 @@ class SoulSyncProvider(PluginProvider):
                 await self._refresh_task
         await super().unload(is_removed)
 
-    async def get_status(self, items: list[ItemDescriptor]) -> dict[str, dict[str, Any]]:
+    async def get_status(self, items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """
         Return the SoulSync state of the given items, keyed by item uri.
 
@@ -198,7 +198,7 @@ class SoulSyncProvider(PluginProvider):
             if not uri:
                 continue
             with suppress(ValueError):
-                result[uri] = await self._status_for(descriptor)
+                result[uri] = await self._status_for(cast("ItemDescriptor", descriptor))
         return result
 
     async def add_item(self, uri: str) -> dict[str, Any]:
