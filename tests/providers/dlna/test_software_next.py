@@ -43,6 +43,8 @@ def _player(manufacturer: str, duration: int = 20) -> DLNAPlayer:
         clear_all=True,
     )
     player._attr_playback_state = PlaybackState.PLAYING
+    # the renderer itself has confirmed playback of the current track
+    player._renderer_playing_uri = "http://192.168.1.2/current.mp3"
     player._attr_elapsed_time = 18
     player._attr_elapsed_time_last_updated = time.time()
     return player
@@ -233,6 +235,104 @@ async def test_marantz_software_next_recovers_when_playing_stalls_at_duration() 
     await asyncio.gather(*tasks)
 
     player.play_media.assert_awaited_once_with(next_media)
+
+
+def _run_tasks(player: DLNAPlayer) -> list[asyncio.Task[Any]]:
+    """Run tasks created by the player directly and return them."""
+    tasks: list[asyncio.Task[Any]] = []
+
+    def _create_task(target: Coroutine[Any, Any, Any], **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(target)
+        tasks.append(task)
+        return task
+
+    player.mass.create_task = _create_task  # type: ignore[assignment]
+    return tasks
+
+
+async def test_marantz_software_next_ignores_the_late_stop_of_the_previous_track() -> None:
+    """A Stop reported before the renderer confirms the new track must not end it."""
+    player = _player("Marantz")
+    # the renderer still reports the previous track, stopped by the transition
+    player._renderer_playing_uri = "http://192.168.1.2/previous.mp3"
+    player._attr_playback_state = PlaybackState.IDLE
+    player._attr_elapsed_time = 0
+    next_media = PlayerMedia(uri="library://track/next", media_type=MediaType.TRACK)
+    tasks = _run_tasks(player)
+    player.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await player.enqueue_next_media(next_media)
+    await asyncio.sleep(0.6)
+    player.play_media.assert_not_awaited()
+    assert not tasks[0].done()
+
+    # the renderer confirms the current track, plays it and stops at its end
+    player._renderer_playing_uri = "http://192.168.1.2/current.mp3"
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 15
+    player._attr_elapsed_time_last_updated = time.time()
+    await asyncio.sleep(0.3)
+    player._attr_playback_state = PlaybackState.IDLE
+    await asyncio.wait_for(asyncio.gather(*tasks), timeout=2)
+
+    player.play_media.assert_awaited_once_with(next_media)
+
+
+async def test_marantz_software_next_uses_the_shorter_renderer_duration() -> None:
+    """The renderer ending its own (shorter) track still starts the next one."""
+    player = _player("Marantz", duration=366)
+    next_media = PlayerMedia(uri="library://track/next", media_type=MediaType.TRACK)
+    tasks = _run_tasks(player)
+    player.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await player.enqueue_next_media(next_media)
+    # the renderer reports the real file length once it plays it
+    assert player.current_media is not None
+    player.set_current_media(
+        uri=player.current_media.uri, media_type=MediaType.TRACK, duration=243, clear_all=True
+    )
+    player._attr_elapsed_time = 240
+    player._attr_elapsed_time_last_updated = time.time()
+    await asyncio.sleep(0.3)
+    player._attr_playback_state = PlaybackState.IDLE
+    await asyncio.wait_for(asyncio.gather(*tasks), timeout=2)
+
+    player.play_media.assert_awaited_once_with(next_media)
+
+
+async def test_marantz_software_next_respects_a_stop_from_the_renderer() -> None:
+    """A stop well before the end (e.g. from the remote) must not start the next track."""
+    player = _player("Marantz", duration=200)
+    player._attr_elapsed_time = 30
+    next_media = PlayerMedia(uri="library://track/next", media_type=MediaType.TRACK)
+    tasks = _run_tasks(player)
+    player.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await player.enqueue_next_media(next_media)
+    await asyncio.sleep(0.3)
+    player._attr_playback_state = PlaybackState.IDLE
+    await asyncio.wait_for(asyncio.gather(*tasks), timeout=2)
+
+    player.play_media.assert_not_awaited()
+
+
+async def test_marantz_software_next_gives_up_without_renderer_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track the renderer never confirms does not keep the transition armed forever."""
+    monkeypatch.setattr("music_assistant.providers.dlna.player.SOFTWARE_NEXT_START_TIMEOUT", 0.5)
+    player = _player("Marantz")
+    player._renderer_playing_uri = None
+    player._attr_playback_state = PlaybackState.IDLE
+    player._attr_elapsed_time = 0
+    next_media = PlayerMedia(uri="library://track/next", media_type=MediaType.TRACK)
+    tasks = _run_tasks(player)
+    player.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await player.enqueue_next_media(next_media)
+    await asyncio.wait_for(asyncio.gather(*tasks), timeout=3)
+
+    player.play_media.assert_not_awaited()
 
 
 def test_marantz_advertises_seek_with_initial_http_time_range() -> None:

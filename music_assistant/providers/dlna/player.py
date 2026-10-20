@@ -35,6 +35,12 @@ if TYPE_CHECKING:
 
     from .provider import DLNAPlayerProvider
 
+# Seconds before the end of a track within which a renderer stop counts as the natural end.
+SOFTWARE_NEXT_END_TOLERANCE = 10
+
+# Seconds a software transition waits for the renderer to confirm the current track.
+SOFTWARE_NEXT_START_TIMEOUT = 30
+
 
 def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
     func: Callable[Concatenate[DLNAPlayerT, P], Awaitable[R]],
@@ -104,6 +110,8 @@ class DLNAPlayer(Player):
         self._observed_playback_state: PlaybackState | None = None
         self._playing_since: float | None = None
         self._stop_generation = 0
+        # last URI the renderer itself reported as playing (never the optimistic state)
+        self._renderer_playing_uri: str | None = None
 
         # Track BOOTID in SSDP advertisements for device changes
         self.bootid: int | None = None
@@ -176,6 +184,8 @@ class DLNAPlayer(Player):
         self._attr_playback_state = _playback_state
 
         _device_uri = self.device.current_track_uri or ""
+        if _playback_state == PlaybackState.PLAYING:
+            self._renderer_playing_uri = _device_uri
         try:
             media_title = self.device.media_title
             media_artist = self.device.media_artist
@@ -681,29 +691,91 @@ class DLNAPlayer(Player):
         """
         Start enqueued media after the current track ends on affected players.
 
+        The renderer may still report the Stop that preceded the current track after this
+        transition was armed, so an IDLE state only ends the track once the renderer has
+        been seen playing it.
+
         :param media: Media item to start next.
         :param current_uri: URI that must remain current while waiting.
         :param current_duration: Duration reported for the current track.
         :param stop_generation: Stop counter captured when the item was enqueued.
         """
         max_elapsed = 0.0
-        while self.available:
-            elapsed = self.corrected_elapsed_time or 0.0
-            max_elapsed = max(max_elapsed, elapsed)
+        seen_playing = False
+        armed_at = time.time()
+        while True:
+            if self._stop_generation != stop_generation:
+                self.logger.debug(
+                    "Software next for %s cancelled: playback was stopped or replaced",
+                    self.display_name,
+                )
+                return
+            if not self.available:
+                self.logger.warning(
+                    "Software next for %s abandoned: the player became unavailable",
+                    self.display_name,
+                )
+                return
             current_media = self.current_media
+            on_current_track = current_media is not None and current_media.uri == current_uri
+            playback_state = self.playback_state
+            if on_current_track:
+                # only positions of the armed track count: the previous track's final
+                # position may still be reported right after the transition
+                max_elapsed = max(max_elapsed, self.corrected_elapsed_time or 0.0)
+            if self._renderer_playing_uri == current_uri:
+                seen_playing = True
             if current_duration and max_elapsed >= current_duration:
-                if self._stop_generation != stop_generation:
-                    return
+                self.logger.debug(
+                    "Software next for %s: elapsed %.0fs reached duration %ss",
+                    self.display_name,
+                    max_elapsed,
+                    current_duration,
+                )
                 await self.play_media(media)
                 return
-            if self.playback_state == PlaybackState.IDLE:
-                if self._stop_generation != stop_generation:
+            if not seen_playing:
+                if time.time() - armed_at > SOFTWARE_NEXT_START_TIMEOUT:
+                    self.logger.warning(
+                        "Software next for %s abandoned: the renderer did not confirm "
+                        "playback of the current track within %ss (state %s)",
+                        self.display_name,
+                        SOFTWARE_NEXT_START_TIMEOUT,
+                        playback_state,
+                    )
                     return
-                if current_duration and max_elapsed < max(current_duration - 5, 0):
+            elif playback_state == PlaybackState.IDLE:
+                # the renderer reports its own duration once it plays the track
+                renderer_duration = (
+                    current_media.duration
+                    if current_media is not None and on_current_track
+                    else None
+                )
+                end_durations = [d for d in (current_duration, renderer_duration) if d]
+                if not end_durations or max_elapsed >= (
+                    min(end_durations) - SOFTWARE_NEXT_END_TOLERANCE
+                ):
+                    self.logger.debug(
+                        "Software next for %s: renderer stopped at %.0fs (durations %s)",
+                        self.display_name,
+                        max_elapsed,
+                        end_durations,
+                    )
+                    await self.play_media(media)
                     return
-                await self.play_media(media)
+                self.logger.info(
+                    "Software next for %s not started: the renderer stopped at %.0fs, "
+                    "before the end of the track (durations %s)",
+                    self.display_name,
+                    max_elapsed,
+                    end_durations,
+                )
                 return
-            if current_media is None or current_media.uri != current_uri:
+            elif playback_state == PlaybackState.PLAYING and not on_current_track:
+                self.logger.debug(
+                    "Software next for %s cancelled: the renderer plays another URI",
+                    self.display_name,
+                )
                 return
             await asyncio.sleep(0.25)
 
