@@ -43,6 +43,9 @@ def _make_controller(*, strict_player: bool, item_in_window: bool) -> MagicMock:
     )
     for helper in ("_requested_item_ids", "_ended_item_ids", "_release_abandoned_item_sources"):
         setattr(ctrl, helper, MethodType(getattr(StreamsController, helper), ctrl))
+    ctrl._can_serve_byte_stable_lossless_source = (
+        StreamsController._can_serve_byte_stable_lossless_source
+    )
     ctrl.mass = MagicMock()
 
     queue = MagicMock()

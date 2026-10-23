@@ -6,7 +6,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import InvalidCommand, MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -157,6 +157,8 @@ def test_restarted_stream_progress_is_restored_to_media_timeline() -> None:
     queue.current_item.streamdetails = MagicMock(seek_position=30)
     player = MagicMock(player_id=QUEUE_ID, type=PlayerType.PLAYER)
     player.state.corrected_elapsed_time = 4
+    player.state.active_source = QUEUE_ID
+    player.state.playback_state = PlaybackState.PLAYING
     signal_event = Mock()
     ctrl.mass.signal_event = signal_event  # type: ignore[method-assign]
 

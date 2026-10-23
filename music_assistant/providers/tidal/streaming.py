@@ -41,6 +41,7 @@ def _loudness_from_gain(value: float | None) -> float | None:
         return None
     return _REPLAYGAIN_REFERENCE_LUFS - value
 
+
 # Seconds by which DASH stream details expire before their manifest route,
 # so cached details are never reused once the route may have been removed.
 _DASH_EXPIRATION_MARGIN: int = 60
@@ -58,7 +59,7 @@ class TidalStreamingManager:
         self.api = provider.api
         self.mass = provider.mass
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:  # noqa: PLR0915
         """Get stream details for a track."""
         # 1. Try direct lookup
         try:
@@ -191,7 +192,6 @@ class TidalStreamingManager:
             allow_seek=True,
             loudness=loudness,
             loudness_album=loudness_album,
-
             expiration=expiration,
         )
 

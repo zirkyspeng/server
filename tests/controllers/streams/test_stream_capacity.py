@@ -727,6 +727,7 @@ async def test_a_consumer_leaving_between_attempts_ends_the_reselection(
     assert result is None
     assert get_buffer.await_count == 1
 
+
 async def test_cached_streamdetails_are_refreshed_once_after_a_source_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

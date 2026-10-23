@@ -2348,6 +2348,7 @@ def _native_stream_handler_context(
     audio.select_flow_pcm_format = AsyncMock(return_value=pcm_format)
     audio.get_output_format = AsyncMock(return_value=output_format)
     audio.get_player_output_plan.side_effect = _OutputPlanRequested
+    audio.fade_into_pending.return_value = False
 
     controller = cast("Any", object.__new__(StreamsController))
     controller._open_item_streams = {}

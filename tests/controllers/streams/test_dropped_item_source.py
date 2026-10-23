@@ -114,6 +114,9 @@ class _Harness:
         # bind the real helpers: the mocked self would silently swallow them otherwise
         for helper in ("_requested_item_ids", "_ended_item_ids", "_release_abandoned_item_sources"):
             setattr(self.ctrl, helper, MethodType(getattr(StreamsController, helper), self.ctrl))
+        self.ctrl._can_serve_byte_stable_lossless_source = (
+            StreamsController._can_serve_byte_stable_lossless_source
+        )
         self.ctrl.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
         self.ctrl.mass.player_queues = player_queues
         self.ctrl.mass.players.get_player.return_value = player

@@ -6,11 +6,8 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
 from datetime import timedelta
-from http.client import HTTPConnection, HTTPException
-from typing import Any, Concatenate, TYPE_CHECKING
-from urllib.error import HTTPError, URLError
+from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
-from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError
 
 import defusedxml.ElementTree as DefusedET
