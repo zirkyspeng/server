@@ -366,3 +366,42 @@ def test_other_dlna_players_keep_native_gapless_enqueuing() -> None:
 
     assert PlayerFeature.ENQUEUE in player.supported_features
     assert PlayerFeature.GAPLESS_PLAYBACK in player.supported_features
+
+
+async def test_marantz_software_next_waits_for_the_started_uri() -> None:
+    """A renderer still reporting the previous URI does not arm the wrong track."""
+    player = _player("Marantz")
+    player._attr_playback_state = PlaybackState.IDLE
+    player.mass.streams.resolve_stream_url = AsyncMock(  # type: ignore[method-assign]
+        return_value="http://192.168.1.2/new.wav"
+    )
+    player._async_call_avt_fresh = AsyncMock()  # type: ignore[method-assign]
+    player._play_enqueued_media_after_stop = AsyncMock()  # type: ignore[method-assign]
+
+    def _discard_task(target: Coroutine[Any, Any, Any], **_kwargs: Any) -> None:
+        target.close()
+
+    player.mass.create_task = MagicMock(  # type: ignore[method-assign]
+        side_effect=_discard_task
+    )
+    await player.play_media(
+        PlayerMedia(
+            uri="library://track/new",
+            media_type=MediaType.TRACK,
+            duration=160,
+            queue_item_id="new-item",
+        )
+    )
+    # a renderer event right after play_media still carries the previous track
+    player.set_current_media(
+        uri="http://192.168.1.2/current.mp3", media_type=MediaType.TRACK, clear_all=True
+    )
+    next_media = PlayerMedia(
+        uri="library://track/next", media_type=MediaType.TRACK, queue_item_id="next-item"
+    )
+    await player.enqueue_next_media(next_media)
+
+    player._play_enqueued_media_after_stop.assert_called_once_with(
+        next_media, "http://192.168.1.2/new.wav", 160, 0
+    )
+    assert player._renderer_playing_uri is None

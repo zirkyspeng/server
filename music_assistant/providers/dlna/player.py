@@ -261,6 +261,7 @@ class DLNAPlayer(Player):
         """Send STOP command to given player."""
         assert self.device is not None  # for type checking
         self._stop_generation += 1
+        self._started_media_duration = None
         if self.device.can_stop:
             await self.device.async_stop()
             return
@@ -314,6 +315,8 @@ class DLNAPlayer(Player):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._started_media_duration = (url, media.duration)
+        # the renderer's confirmation of an earlier URI says nothing about this one
+        self._renderer_playing_uri = None
         try:
             if self._uses_software_next():
                 await self._async_call_avt_fresh(
@@ -336,16 +339,23 @@ class DLNAPlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         assert self.device is not None  # for type checking
-        if self._uses_software_next() and self.current_media and self.current_media.uri:
+        if self._uses_software_next() and (
+            self._started_media_duration or (self.current_media and self.current_media.uri)
+        ):
+            # Right after play_media the renderer may still report the URI of what it
+            # played before, so the track to wait for is the one handed to it.
+            if self._started_media_duration:
+                current_uri, current_duration = self._started_media_duration
+            else:
+                assert self.current_media is not None
+                current_uri, current_duration = self.current_media.uri, None
+            if not current_duration and self.current_media:
+                current_duration = self.current_media.duration
             self.mass.create_task(
                 self._play_enqueued_media_after_stop(
                     media,
-                    self.current_media.uri,
-                    self._started_media_duration[1]
-                    if self._started_media_duration
-                    and self._started_media_duration[0] == self.current_media.uri
-                    and self._started_media_duration[1]
-                    else self.current_media.duration,
+                    current_uri,
+                    current_duration,
                     self._stop_generation,
                 ),
                 task_id=f"dlna_software_next_{self.player_id}",
