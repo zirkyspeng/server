@@ -110,7 +110,9 @@ from music_assistant.controllers.streams.live_announcements import (
 from music_assistant.controllers.streams.stream_sources import StreamSourceMode, UpgradeQuality
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
+    WAV_HEADER_SIZE,
     calculate_content_length,
+    create_exact_wave_header,
     create_streaming_wave_header,
     get_content_length,
     get_mime_type,
@@ -210,6 +212,42 @@ async def _wav_passthrough_stream(
         yield create_streaming_wave_header(output_format)
         async for chunk in audio_input:
             yield chunk
+
+
+async def _exact_length_stream(
+    pcm_input: AsyncGenerator[bytes], header: bytes, skip_bytes: int, body_length: int
+) -> AsyncGenerator[bytes]:
+    """
+    Yield exactly ``body_length`` bytes: the header, then the PCM, padded or truncated.
+
+    A source that ends early is padded with digital silence and one that runs long is
+    cut, so the renderer always receives the complete object it was announced.
+
+    :param pcm_input: Raw PCM matching the header's format.
+    :param header: The (part of the) WAV header this body starts with.
+    :param skip_bytes: PCM bytes to drop before the first byte that is sent.
+    :param body_length: The exact number of bytes the response announced.
+    """
+    remaining = body_length
+    async with aclosing(pcm_input):
+        if header:
+            header = header[:remaining]
+            remaining -= len(header)
+            yield header
+        async for raw_chunk in pcm_input:
+            if remaining <= 0:
+                break
+            dropped = min(skip_bytes, len(raw_chunk))
+            skip_bytes -= dropped
+            chunk = raw_chunk[dropped : dropped + remaining]
+            if not chunk:
+                continue
+            remaining -= len(chunk)
+            yield chunk
+    while remaining > 0:
+        pad = min(remaining, 65536)
+        remaining -= pad
+        yield bytes(pad)
 
 
 def _get_publish_addresses(
@@ -757,6 +795,23 @@ class StreamsController(CoreController):
             raise InvalidDataError("Can not resolve stream URL: Invalid PlayerMedia data")
         queue_id = media.source_id
         queue = self.mass.player_queues.get(queue_id) if queue_id else None
+        if (
+            output_codec == ContentType.FLAC
+            and protocol_player is not None
+            and protocol_player.supports_http_time_seek is True
+            and media.media_type == MediaType.TRACK
+            and queue_id is not None
+            and (queue_item := self.mass.player_queues.get_item(queue_id, queue_item_id))
+            and queue_item.streamdetails is not None
+            and (queue_item.duration or queue_item.streamdetails.duration)
+            and not self._has_byte_stable_lossless_source(protocol_player, queue_item)
+        ):
+            # A transcoded FLAC has no exact length until encoding finishes, and a
+            # renderer that trusts the announced length (Marantz) either waits in
+            # silence for bytes that never come or cuts the track short. WAV has an
+            # exact length, so the track ends on its last byte and the next one can
+            # start right away.
+            fmt = ContentType.WAV.value
         crossfade_needs_flow_mode = (
             # crossfade only applies to tracks; if the queue has it enabled but the player(protocol)
             # does not support gapless playback, we need to enforce flow mode
@@ -1064,7 +1119,45 @@ class StreamsController(CoreController):
             http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
             full_content_length: int | None = None
             byte_range_start: int | None = None
-            if byte_range_request:
+            # A WAV track for a seekable renderer is sent with its exact length: every
+            # byte of the announced object is known up front, so the renderer ends the
+            # track on its last byte instead of waiting for (or cutting) an estimate.
+            exact_wav = http_time_seek_enabled and output_format.content_type == ContentType.WAV
+            wav_total_frames = round(stream_duration * output_format.sample_rate)
+            wav_block_align = output_format.channels * (output_format.bit_depth // 8)
+            wav_skip_bytes = 0
+            if exact_wav and byte_range_request:
+                if (
+                    not byte_range_request.startswith("bytes=")
+                    or "," in byte_range_request
+                    or not byte_range_request.endswith("-")
+                ):
+                    raise web.HTTPBadRequest(reason="Only one open-ended byte range is supported")
+                try:
+                    byte_range_start = int(byte_range_request[6:-1])
+                except ValueError as err:
+                    raise web.HTTPBadRequest(reason="Invalid byte range") from err
+                full_content_length = WAV_HEADER_SIZE + wav_total_frames * wav_block_align
+                if byte_range_start < 0 or byte_range_start >= full_content_length:
+                    raise web.HTTPRequestRangeNotSatisfiable(
+                        headers={"Content-Range": f"bytes */{full_content_length}"}
+                    )
+                # the byte offset maps exactly onto the PCM timeline: seek to the whole
+                # second before it and drop the bytes up to the requested offset
+                data_offset = max(byte_range_start - WAV_HEADER_SIZE, 0)
+                effective_seek_position = int(
+                    data_offset // wav_block_align // output_format.sample_rate
+                )
+                wav_skip_bytes = data_offset - (
+                    effective_seek_position * output_format.sample_rate * wav_block_align
+                )
+                self.logger.debug(
+                    "Serving exact WAV byte seek for %s at %s bytes (%.3f seconds)",
+                    queue_item.name,
+                    byte_range_start,
+                    data_offset / wav_block_align / output_format.sample_rate,
+                )
+            elif byte_range_request:
                 # Marantz renderers expose AVTransport/Seek only after seeing
                 # Accept-Ranges, then reconnect with an open-ended byte range even
                 # though the actual seek command uses REL_TIME. The outgoing FLAC
@@ -1154,8 +1247,21 @@ class StreamsController(CoreController):
                 headers=headers,
             )
             resp.content_type = get_mime_type(output_format.output_format_str)
+            wav_body_length: int | None = None
             if byte_range_start is not None and full_content_length is not None:
                 resp.content_length = full_content_length - byte_range_start
+                if exact_wav:
+                    wav_body_length = resp.content_length
+            elif exact_wav:
+                if requested_time_seek_end is not None:
+                    end_frames = round(requested_time_seek_end * output_format.sample_rate)
+                else:
+                    end_frames = wav_total_frames
+                start_frames = effective_seek_position * output_format.sample_rate
+                wav_body_length = (
+                    WAV_HEADER_SIZE + max(end_frames - start_frames, 0) * wav_block_align
+                )
+                resp.content_length = wav_body_length
             elif http_profile == "forced_content_length" and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
@@ -1265,7 +1371,16 @@ class StreamsController(CoreController):
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
-                    output_format=output_format,
+                    output_format=(
+                        AudioFormat(
+                            content_type=ContentType.from_bit_depth(output_format.bit_depth),
+                            sample_rate=output_format.sample_rate,
+                            bit_depth=output_format.bit_depth,
+                            channels=output_format.channels,
+                        )
+                        if exact_wav
+                        else output_format
+                    ),
                     filter_params=filter_params,
                     extra_input_args=output_pacing_args(pacing),
                     extra_output_args=(
@@ -1277,6 +1392,19 @@ class StreamsController(CoreController):
                         else None
                     ),
                 )
+                if exact_wav and wav_body_length is not None:
+                    header = create_exact_wave_header(output_format, wav_total_frames)
+                    if byte_range_start is not None:
+                        header = header[byte_range_start:]
+                    elif effective_seek_position or requested_time_seek_end is not None:
+                        # a time range is answered as an object of its own
+                        header = create_exact_wave_header(
+                            output_format,
+                            (wav_body_length - WAV_HEADER_SIZE) // wav_block_align,
+                        )
+                    audio_bytes = _exact_length_stream(
+                        audio_bytes, header, wav_skip_bytes, wav_body_length
+                    )
             first_chunk_received = False
             stream_completed = True
             bytes_sent = 0
@@ -2166,6 +2294,15 @@ class StreamsController(CoreController):
         request: web.Request, player: Player, queue_item: QueueItem
     ) -> bool:
         """Return whether a Marantz request can use the original lossless HTTP object."""
+        return request.match_info[
+            "fmt"
+        ] == ContentType.FLAC.value and StreamsController._has_byte_stable_lossless_source(
+            player, queue_item
+        )
+
+    @staticmethod
+    def _has_byte_stable_lossless_source(player: Player, queue_item: QueueItem) -> bool:
+        """Return whether the item's source is an original FLAC object a Marantz can fetch."""
         streamdetails = queue_item.streamdetails
         if streamdetails is None or not isinstance(streamdetails.path, str):
             return False
@@ -2173,7 +2310,6 @@ class StreamsController(CoreController):
         return bool(
             player.supports_http_time_seek is True
             and queue_item.media_type == MediaType.TRACK
-            and request.match_info["fmt"] == ContentType.FLAC.value
             and streamdetails.audio_format.content_type == ContentType.FLAC
             and streamdetails.path.startswith(("http://", "https://"))
             and streamdetails.decryption_key is None

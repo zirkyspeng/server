@@ -264,6 +264,35 @@ def create_wave_header(
     return file.getvalue()
 
 
+WAV_HEADER_SIZE: Final[int] = 44
+
+
+def create_exact_wave_header(audio_format: AudioFormat, num_frames: int) -> bytes:
+    """
+    Generate a wave header for a PCM object of a known number of frames.
+
+    :param audio_format: The PCM format the audio behind the header is in.
+    :param num_frames: Number of sample frames in the data chunk.
+    """
+    channels = audio_format.channels
+    sample_rate = audio_format.sample_rate
+    bits_per_sample = audio_format.bit_depth
+    byte_rate = sample_rate * channels * (bits_per_sample // 8)
+    block_align = channels * (bits_per_sample // 8)
+    data_size = num_frames * block_align
+    return (
+        b"RIFF"
+        + struct.pack("<L", 36 + data_size)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack(
+            "<LHHLLHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample
+        )
+        + b"data"
+        + struct.pack("<L", data_size)
+    )
+
+
 def create_streaming_wave_header(audio_format: AudioFormat) -> bytes:
     """
     Generate a wave header for a stream whose length is not known up front.
