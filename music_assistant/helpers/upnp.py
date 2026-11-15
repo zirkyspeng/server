@@ -282,12 +282,14 @@ def create_didl_metadata(
     # - Streaming transfer mode (bit 24)
     # - Background transfer mode supported (bit 22)
     # - DLNA v1.5 (bit 20)
+    # the res duration describes the audio we hand over, which is shorter than
+    # the media item when playback starts at a seek position. A flow stream carries on
+    # past that point into the next track, so a player told the shorter duration drops
+    # the stream at its end (or requests it again): give a flow the whole track.
     # Time-seek-capable renderers keep an absolute media timeline, including when
-    # the first response starts at a resume offset. Other renderers receive only
-    # the shortened stream and therefore need its remaining duration.
-    stream_duration = int(
-        media.duration if supports_time_seek else (media.stream_duration or media.duration or 0)
-    )
+    # the first response starts at a resume offset, so they get the whole track too.
+    served = None if supports_time_seek or "/flow/" in uri else media.stream_duration
+    stream_duration = int(served or media.duration or 0)
     duration_str = str(stream_duration // 3600).zfill(2) + ":"
     duration_str += str((stream_duration % 3600) // 60).zfill(2) + ":"
     duration_str += str(stream_duration % 60).zfill(2)

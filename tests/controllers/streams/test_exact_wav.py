@@ -71,7 +71,7 @@ def _resolver(streamdetails: object, duration: int | None = 200) -> StreamsContr
         extra_attributes={},
     )
     mass = MagicMock()
-    mass.players.get_player.return_value = player
+    mass.players.get_output_protocol.return_value = player
     mass.player_queues.get_item.return_value = queue_item
     mass.player_queues.get.return_value = None
     controller.mass = mass

@@ -6,13 +6,18 @@ import time
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    SleepTimerMode,
+)
 from music_assistant_models.errors import InvalidCommand, MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.player_queues.state import PlayerQueueData, SleepTimerTarget
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 QUEUE_ID = "q1"
@@ -50,14 +55,18 @@ def _controller_with_stale_queue() -> tuple[
     ctrl._get_next_index = Mock(return_value=None)  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
+    # the queue's player is not in a group
+    ctrl.mass.players._resolve_playback_owner = Mock(side_effect=lambda player: player)
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.logger = MagicMock()  # the retry-fallback path logs a warning
     return ctrl, queue, signals
 
 
 async def test_play_index_resets_elapsed_with_item_switch() -> None:
-    """Starting a new item zeroes elapsed_time and freshens its timestamp."""
+    """Starting a new item zeroes elapsed_time, freshens its timestamp and takes its speed."""
     ctrl, queue, signals = _controller_with_stale_queue()
+    queue.playback_speed = 2.0
     before = time.time()
 
     await ctrl.play_index(QUEUE_ID, 1)
@@ -66,6 +75,7 @@ async def test_play_index_resets_elapsed_with_item_switch() -> None:
     assert queue.current_item.queue_item_id == "new"
     assert queue.elapsed_time == 0
     assert queue.elapsed_time_last_updated >= before
+    assert queue.playback_speed == 1.0
     # no signaled state may pair the new item with the previous item's elapsed
     assert all(elapsed == 0 for item_id, elapsed in signals if item_id == "new"), signals
 
@@ -78,6 +88,29 @@ async def test_play_index_sets_elapsed_to_seek_position() -> None:
 
     assert queue.elapsed_time == 30
     assert all(elapsed == 30 for item_id, elapsed in signals if item_id == "new"), signals
+
+
+async def test_play_index_moves_the_sleep_timer_stop_to_the_new_item() -> None:
+    """A user switch moves the point a sleep timer stops at to the end of the new item."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    queue_data.sleep_timer_target = SleepTimerTarget(SleepTimerMode.END_OF_ITEM, "old", 50_000)
+
+    await ctrl.play_index(QUEUE_ID, 1)
+
+    assert queue_data.sleep_timer_target == SleepTimerTarget(SleepTimerMode.END_OF_ITEM, "new", 279)
+
+
+async def test_play_index_drops_a_step_that_has_not_played_yet() -> None:
+    """An item that starts to play takes the place of a next or a previous that still waits."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+
+    await ctrl._play_index(QUEUE_ID, 1, None, fade_in=False)
+
+    # the second for which the step holds its item back, and its move once that waits
+    step = f"queue_play_index_{QUEUE_ID}"
+    ctrl.mass.cancel_timer.assert_any_call(step)  # type: ignore[attr-defined]
+    ctrl.mass.cancel_task.assert_any_call(step)  # type: ignore[attr-defined]
 
 
 async def test_seek_publishes_target_before_restarting_stream() -> None:
@@ -94,11 +127,11 @@ async def test_seek_publishes_target_before_restarting_stream() -> None:
 
     ctrl.signal_update = Mock(side_effect=_record_signal)  # type: ignore[method-assign]
     play_index = AsyncMock(side_effect=_record_restart)
-    ctrl.play_index = play_index  # type: ignore[method-assign]
+    ctrl._play_index = play_index  # type: ignore[method-assign]
 
     await ctrl.seek(QUEUE_ID, 30)
 
-    play_index.assert_awaited_once_with(QUEUE_ID, 0, seek_position=30)
+    play_index.assert_awaited_once_with(QUEUE_ID, 0, 30, fade_in=False)
     # the play action's own bookkeeping updates around the seek carry whatever the queue
     # holds at that moment; the seek target itself must go out before the stream restarts
     assert events.index(("signal", 30)) < events.index(("restart", 30))
@@ -106,48 +139,34 @@ async def test_seek_publishes_target_before_restarting_stream() -> None:
     assert queue.elapsed_time_last_updated >= before
 
 
-async def test_seek_uses_active_output_protocol_native_seek() -> None:
+async def test_seek_uses_output_protocol_native_seek() -> None:
     """A seek-capable output protocol keeps the original stream and full duration."""
     ctrl, queue, _signals = _controller_with_stale_queue()
-    parent_player = MagicMock()
-    parent_player.active_output_protocol = "protocol-player"
-    protocol_player = MagicMock()
-    protocol_player.state.supported_features = {PlayerFeature.SEEK}
-    protocol_player.seek = AsyncMock()
-    ctrl.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
-        side_effect=lambda player_id, *_args: (
-            parent_player if player_id == QUEUE_ID else protocol_player
-        )
-    )
-    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    protocol = MagicMock()
+    protocol.supported_features = {PlayerFeature.SEEK}
+    protocol.seek = AsyncMock()
+    ctrl.mass.players.get_player.return_value.resolve_output_protocol.return_value = protocol
 
     await ctrl.seek(QUEUE_ID, 30)
 
-    protocol_player.seek.assert_awaited_once_with(30)
-    ctrl.play_index.assert_not_awaited()
+    protocol.seek.assert_awaited_once_with(30)
+    ctrl._load_item.assert_not_awaited()  # type: ignore[attr-defined]
     assert queue.elapsed_time == 30
 
 
-async def test_seek_restarts_time_seek_stream_when_protocol_hides_native_seek() -> None:
-    """A Marantz-like protocol rebuilds the stream instead of issuing native seek."""
-    ctrl, _queue, _signals = _controller_with_stale_queue()
-    parent_player = MagicMock()
-    parent_player.active_output_protocol = "protocol-player"
-    protocol_player = MagicMock()
-    protocol_player.supports_http_time_seek = True
-    protocol_player.state.supported_features = set()
-    protocol_player.seek = AsyncMock()
-    ctrl.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
-        side_effect=lambda player_id, *_args: (
-            parent_player if player_id == QUEUE_ID else protocol_player
-        )
-    )
-    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+async def test_seek_restarts_stream_when_output_protocol_has_no_native_seek() -> None:
+    """A protocol without native seek gets its stream rebuilt at the seek position."""
+    ctrl, queue, _signals = _controller_with_stale_queue()
+    protocol = MagicMock()
+    protocol.supported_features = set()
+    protocol.seek = AsyncMock()
+    ctrl.mass.players.get_player.return_value.resolve_output_protocol.return_value = protocol
 
     await ctrl.seek(QUEUE_ID, 30)
 
-    protocol_player.seek.assert_not_awaited()
-    ctrl.play_index.assert_awaited_once_with(QUEUE_ID, 0, seek_position=30)
+    protocol.seek.assert_not_awaited()
+    assert ctrl._load_item.await_args.kwargs["seek_position"] == 30  # type: ignore[attr-defined]
+    assert queue.elapsed_time == 30
 
 
 def test_restarted_stream_progress_is_restored_to_media_timeline() -> None:
@@ -156,9 +175,9 @@ def test_restarted_stream_progress_is_restored_to_media_timeline() -> None:
     assert queue.current_item is not None
     queue.current_item.streamdetails = MagicMock(seek_position=30)
     player = MagicMock(player_id=QUEUE_ID, type=PlayerType.PLAYER)
-    player.state.corrected_elapsed_time = 4
-    player.state.active_source = QUEUE_ID
-    player.state.playback_state = PlaybackState.PLAYING
+    player.corrected_elapsed_time = 4
+    player.active_source = QUEUE_ID
+    player.playback_state = PlaybackState.PLAYING
     signal_event = Mock()
     ctrl.mass.signal_event = signal_event  # type: ignore[method-assign]
 
@@ -166,6 +185,26 @@ def test_restarted_stream_progress_is_restored_to_media_timeline() -> None:
 
     assert queue.elapsed_time == 34
     signal_event.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("seek_to_start", "expected_position"),
+    [(True, 0), (False, 1680)],
+)
+async def test_seek_to_start_skips_resume_point(
+    seek_to_start: bool, expected_position: int
+) -> None:
+    """Seeking to 0 starts the item at 0, a plain start still picks up its resume point."""
+    ctrl, queue, _signals = _controller_with_stale_queue()
+    ctrl._get_resume_position = AsyncMock(return_value=1680)  # type: ignore[method-assign]
+
+    if seek_to_start:
+        await ctrl.seek(QUEUE_ID, 0)
+    else:
+        await ctrl.play_index(QUEUE_ID, 0)
+
+    assert ctrl._load_item.await_args.kwargs["seek_position"] == expected_position  # type: ignore[attr-defined]
+    assert queue.elapsed_time == expected_position
 
 
 async def test_play_index_retry_fallback_discards_failed_items_seek_position() -> None:
