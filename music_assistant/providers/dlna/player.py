@@ -109,6 +109,10 @@ class DLNAPlayer(Player):
         self._stop_generation = 0
         # last URI the renderer itself reported as playing (never the optimistic state)
         self._renderer_playing_uri: str | None = None
+        # (uri, duration) of the track last handed to the renderer: a renderer that
+        # reports no duration of its own (Marantz with WAV) overwrites the one in
+        # current_media with 0, so the software next keeps the queue's value here
+        self._started_media_duration: tuple[str, int | None] | None = None
 
         # Track BOOTID in SSDP advertisements for device changes
         self.bootid: int | None = None
@@ -309,6 +313,7 @@ class DLNAPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
+        self._started_media_duration = (url, media.duration)
         try:
             if self._uses_software_next():
                 await self._async_call_avt_fresh(
@@ -336,7 +341,11 @@ class DLNAPlayer(Player):
                 self._play_enqueued_media_after_stop(
                     media,
                     self.current_media.uri,
-                    self.current_media.duration,
+                    self._started_media_duration[1]
+                    if self._started_media_duration
+                    and self._started_media_duration[0] == self.current_media.uri
+                    and self._started_media_duration[1]
+                    else self.current_media.duration,
                     self._stop_generation,
                 ),
                 task_id=f"dlna_software_next_{self.player_id}",

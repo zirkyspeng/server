@@ -152,6 +152,9 @@ async def test_marantz_arms_software_next_with_optimistic_duration() -> None:
     )
 
     await player.play_media(current_media)
+    # a renderer without a duration of its own (Marantz with WAV) reports 0
+    assert player._attr_current_media is not None
+    player._attr_current_media.duration = 0
     await player.enqueue_next_media(next_media)
 
     player._play_enqueued_media_after_stop.assert_called_once_with(
