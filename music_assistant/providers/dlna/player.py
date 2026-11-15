@@ -314,7 +314,13 @@ class DLNAPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
-        self._started_media_duration = (url, media.duration)
+        # A track resumed at a position only has its remaining part handed to the renderer
+        # when the stream is generated (exact-length WAV). A proxied original file is
+        # always described, and timed, in full.
+        started_duration = media.duration
+        if media.stream_duration and urlparse(url).path.endswith(".wav"):
+            started_duration = media.stream_duration
+        self._started_media_duration = (url, started_duration)
         # the renderer's confirmation of an earlier URI says nothing about this one
         self._renderer_playing_uri = None
         try:

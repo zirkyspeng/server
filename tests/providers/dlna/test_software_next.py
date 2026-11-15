@@ -405,3 +405,49 @@ async def test_marantz_software_next_waits_for_the_started_uri() -> None:
         next_media, "http://192.168.1.2/new.wav", 160, 0
     )
     assert player._renderer_playing_uri is None
+
+
+@pytest.mark.parametrize(
+    ("stream_url", "expected_duration"),
+    [
+        # a generated exact-length WAV only holds the part after the resume position
+        ("http://192.168.1.2/new.wav", 20),
+        # a proxied original file is always served, and timed, in full
+        ("http://192.168.1.2/new.flac", 160),
+    ],
+)
+async def test_marantz_software_next_duration_of_a_resumed_track(
+    stream_url: str, expected_duration: int
+) -> None:
+    """A resumed track is waited for by the length of the stream given to the renderer."""
+    player = _player("Marantz")
+    player._attr_playback_state = PlaybackState.IDLE
+    player.mass.streams.resolve_stream_url = AsyncMock(  # type: ignore[method-assign]
+        return_value=stream_url
+    )
+    player._async_call_avt_fresh = AsyncMock()  # type: ignore[method-assign]
+    player._play_enqueued_media_after_stop = AsyncMock()  # type: ignore[method-assign]
+
+    def _discard_task(target: Coroutine[Any, Any, Any], **_kwargs: Any) -> None:
+        target.close()
+
+    player.mass.create_task = MagicMock(  # type: ignore[method-assign]
+        side_effect=_discard_task
+    )
+    await player.play_media(
+        PlayerMedia(
+            uri="library://track/new",
+            media_type=MediaType.TRACK,
+            duration=160,
+            stream_duration=20,
+            queue_item_id="new-item",
+        )
+    )
+    next_media = PlayerMedia(
+        uri="library://track/next", media_type=MediaType.TRACK, queue_item_id="next-item"
+    )
+    await player.enqueue_next_media(next_media)
+
+    player._play_enqueued_media_after_stop.assert_called_once_with(
+        next_media, stream_url, expected_duration, 0
+    )
