@@ -111,6 +111,7 @@ from music_assistant.controllers.streams.live_announcements import (
     LiveAnnouncementManager,
 )
 from music_assistant.controllers.streams.stream_sources import StreamSourceMode, UpgradeQuality
+from music_assistant.helpers import flac_verbatim
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
     WAV_HEADER_SIZE,
@@ -129,6 +130,7 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_stream,
 )
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
+from music_assistant.helpers.flac_verbatim import EXACT_FLAC_QUERY
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     request_priority,
@@ -254,6 +256,23 @@ async def _exact_length_stream(
         pad = min(remaining, 65536)
         remaining -= pad
         yield bytes(pad)
+
+
+async def _skip_leading_bytes(
+    pcm_input: AsyncGenerator[bytes], skip_bytes: int
+) -> AsyncGenerator[bytes]:
+    """
+    Yield ``pcm_input`` without its first ``skip_bytes`` bytes.
+
+    :param pcm_input: The stream to pass on.
+    :param skip_bytes: Number of leading bytes to drop.
+    """
+    async with aclosing(pcm_input):
+        async for raw_chunk in pcm_input:
+            dropped = min(skip_bytes, len(raw_chunk))
+            skip_bytes -= dropped
+            if chunk := raw_chunk[dropped:]:
+                yield chunk
 
 
 def _get_publish_addresses(
@@ -889,6 +908,7 @@ class StreamsController(CoreController):
             raise InvalidDataError("Can not resolve stream URL: Invalid PlayerMedia data")
         queue_id = media.source_id
         queue = self.mass.player_queues.get(queue_id) if queue_id else None
+        exact_flac_query = ""
         if (
             output_codec == ContentType.FLAC
             and protocol_player is not None
@@ -902,10 +922,11 @@ class StreamsController(CoreController):
         ):
             # A transcoded FLAC has no exact length until encoding finishes, and a
             # renderer that trusts the announced length (Marantz) either waits in
-            # silence for bytes that never come or cuts the track short. WAV has an
-            # exact length, so the track ends on its last byte and the next one can
-            # start right away.
-            fmt = ContentType.WAV.value
+            # silence for bytes that never come or cuts the track short. A FLAC of
+            # verbatim frames has an exact length, so the track ends on its last byte
+            # and the next one can start right away, and unlike a WAV it carries a
+            # duration the renderer shows.
+            exact_flac_query = f"?{EXACT_FLAC_QUERY}"
         crossfade_needs_flow_mode = (
             # crossfade only applies to tracks; if the queue has it enabled but the player(protocol)
             # does not support gapless playback, we need to enforce flow mode
@@ -933,11 +954,14 @@ class StreamsController(CoreController):
         if queue_index is not None and not flow_mode:
             return (
                 f"{self.base_url}/single/{session_id}/{queue_id}/pos/{queue_index}"
-                f"/{player_id}.{fmt}"
+                f"/{player_id}.{fmt}{exact_flac_query}"
             )
         base_path = "flow" if flow_mode else "single"
+        if flow_mode:
+            exact_flac_query = ""
         return (
-            f"{self.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
+            f"{self.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}"
+            f"/{player_id}.{fmt}{exact_flac_query}"
         )
 
     def close_superseded_item_streams(self, queue_id: str, current_session_id: str | None) -> None:
@@ -1242,10 +1266,53 @@ class StreamsController(CoreController):
             # byte of the announced object is known up front, so the renderer ends the
             # track on its last byte instead of waiting for (or cutting) an estimate.
             exact_wav = http_time_seek_enabled and output_format.content_type == ContentType.WAV
+            # the same holds for a FLAC of verbatim frames, which also carries a duration
+            exact_flac = (
+                http_time_seek_enabled
+                and output_format.content_type == ContentType.FLAC
+                and request.query_string == EXACT_FLAC_QUERY
+                and flac_verbatim.is_supported_format(output_format)
+            )
             wav_total_frames = round(stream_duration * output_format.sample_rate)
             wav_block_align = output_format.channels * (output_format.bit_depth // 8)
             wav_skip_bytes = 0
-            if exact_wav and byte_range_request:
+            flac_first_frame = 0
+            flac_object_frames = wav_total_frames
+            if exact_flac and byte_range_request:
+                if (
+                    not byte_range_request.startswith("bytes=")
+                    or "," in byte_range_request
+                    or not byte_range_request.endswith("-")
+                ):
+                    raise web.HTTPBadRequest(reason="Only one open-ended byte range is supported")
+                try:
+                    byte_range_start = int(byte_range_request[6:-1])
+                except ValueError as err:
+                    raise web.HTTPBadRequest(reason="Invalid byte range") from err
+                full_content_length = flac_verbatim.object_length(output_format, wav_total_frames)
+                if byte_range_start < 0 or byte_range_start >= full_content_length:
+                    raise web.HTTPRequestRangeNotSatisfiable(
+                        headers={"Content-Range": f"bytes */{full_content_length}"}
+                    )
+                # every frame has a known size: start the audio at the whole second
+                # before the frame holding the offset, drop the samples up to that frame
+                # and the frame bytes up to the offset
+                if byte_range_start >= flac_verbatim.FLAC_HEADER_SIZE:
+                    flac_first_frame = flac_verbatim.frame_at_offset(
+                        byte_range_start, output_format, wav_total_frames
+                    )
+                first_sample = flac_first_frame * flac_verbatim.FLAC_BLOCK_SIZE
+                effective_seek_position = first_sample // output_format.sample_rate
+                wav_skip_bytes = (
+                    first_sample - effective_seek_position * output_format.sample_rate
+                ) * wav_block_align
+                self.logger.debug(
+                    "Serving exact FLAC byte seek for %s at %s bytes (%.3f seconds)",
+                    queue_item.name,
+                    byte_range_start,
+                    first_sample / output_format.sample_rate,
+                )
+            elif exact_wav and byte_range_request:
                 if (
                     not byte_range_request.startswith("bytes=")
                     or "," in byte_range_request
@@ -1372,8 +1439,18 @@ class StreamsController(CoreController):
             wav_body_length: int | None = None
             if byte_range_start is not None and full_content_length is not None:
                 resp.content_length = full_content_length - byte_range_start
-                if exact_wav:
+                if exact_wav or exact_flac:
                     wav_body_length = resp.content_length
+            elif exact_flac:
+                if requested_time_seek_end is not None:
+                    end_frames = round(requested_time_seek_end * output_format.sample_rate)
+                else:
+                    end_frames = wav_total_frames
+                start_frames = effective_seek_position * output_format.sample_rate
+                # a resume or time range is answered as an object of its own
+                flac_object_frames = max(end_frames - start_frames, 0)
+                wav_body_length = flac_verbatim.object_length(output_format, flac_object_frames)
+                resp.content_length = wav_body_length
             elif exact_wav:
                 if requested_time_seek_end is not None:
                     end_frames = round(requested_time_seek_end * output_format.sample_rate)
@@ -1494,7 +1571,7 @@ class StreamsController(CoreController):
                             bit_depth=output_format.bit_depth,
                             channels=output_format.channels,
                         )
-                        if exact_wav
+                        if exact_wav or exact_flac
                         else output_format
                     ),
                     filter_params=filter_params,
@@ -1508,7 +1585,28 @@ class StreamsController(CoreController):
                         else None
                     ),
                 )
-                if exact_wav and wav_body_length is not None:
+                if exact_flac and wav_body_length is not None:
+                    if byte_range_start is not None:
+                        audio_bytes = flac_verbatim.exact_flac_stream(
+                            _skip_leading_bytes(audio_bytes, wav_skip_bytes),
+                            output_format,
+                            wav_total_frames,
+                            first_frame=flac_first_frame,
+                            skip_bytes=(
+                                byte_range_start
+                                - flac_verbatim.frame_offset(flac_first_frame, output_format)
+                                if byte_range_start >= flac_verbatim.FLAC_HEADER_SIZE
+                                else byte_range_start
+                            ),
+                            include_header=byte_range_start < flac_verbatim.FLAC_HEADER_SIZE,
+                        )
+                    else:
+                        audio_bytes = flac_verbatim.exact_flac_stream(
+                            audio_bytes,
+                            output_format,
+                            flac_object_frames,
+                        )
+                elif exact_wav and wav_body_length is not None:
                     header = create_exact_wave_header(output_format, wav_total_frames)
                     if byte_range_start is not None:
                         header = header[byte_range_start:]

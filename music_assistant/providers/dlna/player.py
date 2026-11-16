@@ -20,6 +20,7 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.flac_verbatim import EXACT_FLAC_QUERY
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -330,10 +331,13 @@ class DLNAPlayer(PlayerProtocol):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         # A track resumed at a position only has its remaining part handed to the renderer
-        # when the stream is generated (exact-length WAV). A proxied original file is
+        # when the stream is generated (exact-length WAV or FLAC). A proxied original file is
         # always described, and timed, in full.
         started_duration = media.duration
-        if media.stream_duration and urlparse(url).path.endswith(".wav"):
+        parsed_url = urlparse(url)
+        if media.stream_duration and (
+            parsed_url.path.endswith(".wav") or parsed_url.query == EXACT_FLAC_QUERY
+        ):
             started_duration = media.stream_duration
         self._started_media_duration = (url, started_duration)
         # the renderer's confirmation of an earlier URI says nothing about this one

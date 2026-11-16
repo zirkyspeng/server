@@ -92,7 +92,7 @@ def _media() -> MagicMock:
 @pytest.mark.parametrize(
     ("streamdetails", "expected"),
     [
-        # transcoded source (Spotify PCM): exact WAV
+        # transcoded source (Spotify PCM): exact-length verbatim FLAC
         (
             SimpleNamespace(
                 path="spotify:track:x",
@@ -101,7 +101,7 @@ def _media() -> MagicMock:
                 decryption_key=None,
                 fade_in=False,
             ),
-            ".wav",
+            ".flac?exact=1",
         ),
         # original FLAC over HTTP (Tidal): proxied byte for byte as FLAC
         (
@@ -119,7 +119,7 @@ def _media() -> MagicMock:
 async def test_resolve_stream_url_codec(
     monkeypatch: pytest.MonkeyPatch, streamdetails: object, expected: str
 ) -> None:
-    """Only transcoded Marantz tracks are switched to an exact-length WAV."""
+    """Only transcoded Marantz tracks are switched to an exact-length FLAC."""
     controller = _resolver(streamdetails)
     monkeypatch.setattr(StreamsController, "base_url", "http://ma:8097", raising=False)
     monkeypatch.setattr(
