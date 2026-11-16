@@ -399,6 +399,11 @@ class AudioSourceStream:
             await self.aclose()
 
 
+# Seconds before the end of a proxied original file at which the next item gets prepared,
+# as the audio pipeline does for the items it streams.
+PROXIED_NEXT_PREPARE_LEAD = 60
+
+
 class StreamsController(CoreController):
     """Controller to stream audio to players."""
 
@@ -2556,6 +2561,16 @@ class StreamsController(CoreController):
                 streamdetails=streamdetails,
                 player_ids={player.protocol_id, *player.group_members},
             )
+            # the original file bypasses the audio pipeline, whose stream of an item
+            # prepares the next one before the end: do the same from the timeline, so a
+            # next item from a realtime source has its audio ready when it is fetched
+            self.mass.call_later(
+                max(stream_duration - elapsed_time - PROXIED_NEXT_PREPARE_LEAD, 0),
+                self._prepare_next_after_proxied_item,
+                queue.queue_id,
+                queue_item.queue_item_id,
+                task_id=f"prepare_next_after_proxied_item_{queue.queue_id}",
+            )
 
             self.logger.debug(
                 "Serving byte-stable source FLAC for %s (%s, content length: %s)",
@@ -2579,6 +2594,21 @@ class StreamsController(CoreController):
                     queue_item.name,
                 )
             return response
+
+    def _prepare_next_after_proxied_item(self, queue_id: str, queue_item_id: str) -> None:
+        """
+        Prepare the audio of the item after a proxied original file nearing its end.
+
+        :param queue_id: The queue the proxied item belongs to.
+        :param queue_item_id: The proxied item.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None or queue.current_item is None:
+            return
+        if queue.current_item.queue_item_id != queue_item_id:
+            # playback moved on to another item, which prepares its own successor
+            return
+        self.mass.player_queues.prepare_next_audio_buffer(queue_id, queue_item_id)
 
     def _resolve_audio_source_request(
         self, request: web.Request

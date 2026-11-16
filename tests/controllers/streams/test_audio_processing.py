@@ -1484,6 +1484,33 @@ async def test_byte_stable_passthrough_forwards_exact_source_length(
         streamdetails=queue_item.streamdetails,
         player_ids={player.protocol_id, "protocol-1", "protocol-2"},
     )
+    # the next item is prepared a minute before the end of the 180s file
+    controller.mass.call_later.assert_called_once_with(
+        120,
+        controller._prepare_next_after_proxied_item,
+        "queue-1",
+        "item-1",
+        task_id="prepare_next_after_proxied_item_queue-1",
+    )
+
+
+@pytest.mark.parametrize(("current_item_id", "prepared"), [("item-1", True), ("item-2", False)])
+def test_next_item_after_a_proxied_file_is_prepared_only_while_it_plays(
+    monkeypatch: pytest.MonkeyPatch, current_item_id: str, prepared: bool
+) -> None:
+    """The preparation follows the proxied item, not an item playback moved on to."""
+    controller, _request, _group_members = _native_stream_handler_context(monkeypatch)
+    queue = controller.mass.player_queues.get.return_value
+    queue.current_item.queue_item_id = current_item_id
+
+    controller._prepare_next_after_proxied_item("queue-1", "item-1")
+
+    if prepared:
+        controller.mass.player_queues.prepare_next_audio_buffer.assert_called_once_with(
+            "queue-1", "item-1"
+        )
+    else:
+        controller.mass.player_queues.prepare_next_audio_buffer.assert_not_called()
 
 
 @pytest.mark.asyncio

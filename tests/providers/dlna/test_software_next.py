@@ -240,6 +240,33 @@ async def test_marantz_software_next_recovers_when_playing_stalls_at_duration() 
     player.play_media.assert_awaited_once_with(next_media)
 
 
+async def test_marantz_software_next_waits_for_a_renderer_behind_the_clock() -> None:
+    """MA's clock running past the end does not cut a renderer that is still playing."""
+    player = _player("Marantz")
+    # the renderer last reported 14s, 10s ago: the clock says 24s, past the 20s track
+    player._attr_elapsed_time = 14
+    player._attr_elapsed_time_last_updated = time.time() - 10
+    next_media = PlayerMedia(uri="library://track/next", media_type=MediaType.TRACK)
+    tasks: list[asyncio.Task[Any]] = []
+
+    def _create_task(target: Coroutine[Any, Any, Any], **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(target)
+        tasks.append(task)
+        return task
+
+    player.mass.create_task = _create_task  # type: ignore[assignment]
+    player.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await player.enqueue_next_media(next_media)
+    await asyncio.sleep(0.6)
+    player.play_media.assert_not_awaited()
+
+    # the renderer ends the track on its own
+    player._attr_playback_state = PlaybackState.IDLE
+    await asyncio.gather(*tasks)
+    player.play_media.assert_awaited_once_with(next_media)
+
+
 def _run_tasks(player: DLNAPlayer) -> list[asyncio.Task[Any]]:
     """Run tasks created by the player directly and return them."""
     tasks: list[asyncio.Task[Any]] = []

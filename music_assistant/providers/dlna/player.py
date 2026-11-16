@@ -37,6 +37,11 @@ if TYPE_CHECKING:
 # Seconds before the end of a track within which a renderer stop counts as the natural end.
 SOFTWARE_NEXT_END_TOLERANCE = 10
 
+# Seconds past the end of a track MA's own clock may run before it ends the track itself
+# while the renderer still reports an earlier position (a renderer that stalled while
+# its buffer ran dry plays the audio later than MA's clock says).
+SOFTWARE_NEXT_CLOCK_GRACE = 8
+
 # Seconds a software transition waits for the renderer to confirm the current track.
 SOFTWARE_NEXT_START_TIMEOUT = 30
 
@@ -753,6 +758,7 @@ class DLNAPlayer(PlayerProtocol):
         :param stop_generation: Stop counter captured when the item was enqueued.
         """
         max_elapsed = 0.0
+        max_reported = 0.0
         seen_playing = False
         armed_at = time.time()
         while True:
@@ -775,13 +781,19 @@ class DLNAPlayer(PlayerProtocol):
                 # only positions of the armed track count: the previous track's final
                 # position may still be reported right after the transition
                 max_elapsed = max(max_elapsed, self.corrected_elapsed_time or 0.0)
+                # the last position itself, without extrapolating it to now
+                max_reported = max(max_reported, self._attr_elapsed_time or 0.0)
             if self._renderer_playing_uri == current_uri:
                 seen_playing = True
-            if current_duration and max_elapsed >= current_duration:
+            if current_duration and (
+                max_reported >= current_duration
+                or max_elapsed >= current_duration + SOFTWARE_NEXT_CLOCK_GRACE
+            ):
                 self.logger.debug(
-                    "Software next for %s: elapsed %.0fs reached duration %ss",
+                    "Software next for %s: elapsed %.0fs (reported %.0fs) reached duration %ss",
                     self.display_name,
                     max_elapsed,
+                    max_reported,
                     current_duration,
                 )
                 await self.play_media(media)
