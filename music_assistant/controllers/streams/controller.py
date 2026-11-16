@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from aiofiles.os import wrap
-from aiohttp import ClientTimeout, web
+from aiohttp import ClientResponse, ClientTimeout, web
 from mashumaro import DataClassDictMixin
 from music_assistant_models.audio_processing import AudioQueueProcessing
 from music_assistant_models.auth import Scope
@@ -273,6 +274,24 @@ async def _skip_leading_bytes(
             skip_bytes -= dropped
             if chunk := raw_chunk[dropped:]:
                 yield chunk
+
+
+def _range_start_position(source_response: ClientResponse, duration: float) -> float:
+    """
+    Return the position, in seconds, at which a partial response of a file starts.
+
+    The renderer picks the byte offset of a seek in proportion to the file, so the
+    offset's share of the whole file gives the position it seeks to.
+
+    :param source_response: The response for (a range of) the file.
+    :param duration: Duration of the whole file.
+    """
+    content_range = source_response.headers.get("Content-Range") or ""
+    if match := re.fullmatch(r"bytes (\d+)-\d+/(\d+)", content_range.strip()):
+        start, total = int(match.group(1)), int(match.group(2))
+        if total > 0:
+            return start / total * duration
+    return 0.0
 
 
 def _get_publish_addresses(
@@ -2565,7 +2584,12 @@ class StreamsController(CoreController):
             # prepares the next one before the end: do the same from the timeline, so a
             # next item from a realtime source has its audio ready when it is fetched
             self.mass.call_later(
-                max(stream_duration - elapsed_time - PROXIED_NEXT_PREPARE_LEAD, 0),
+                max(
+                    stream_duration
+                    - max(elapsed_time, _range_start_position(source_response, stream_duration))
+                    - PROXIED_NEXT_PREPARE_LEAD,
+                    0,
+                ),
                 self._prepare_next_after_proxied_item,
                 queue.queue_id,
                 queue_item.queue_item_id,

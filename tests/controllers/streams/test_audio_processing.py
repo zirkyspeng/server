@@ -55,7 +55,7 @@ from music_assistant.controllers.streams.audio_processing import (
     get_normalization_details,
 )
 from music_assistant.controllers.streams.constants import output_pacing_args
-from music_assistant.controllers.streams.controller import StreamsController
+from music_assistant.controllers.streams.controller import StreamsController, _range_start_position
 from music_assistant.helpers.dsp import ComplexFilter
 from music_assistant.helpers.upnp import TIME_SEEK_HEADER
 from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
@@ -1492,6 +1492,16 @@ async def test_byte_stable_passthrough_forwards_exact_source_length(
         "item-1",
         task_id="prepare_next_after_proxied_item_queue-1",
     )
+
+
+@pytest.mark.parametrize(
+    ("content_range", "expected"),
+    [("bytes 750-999/1000", 135.0), ("", 0.0), ("bytes */1000", 0.0)],
+)
+def test_range_start_position_follows_the_byte_offset(content_range: str, expected: float) -> None:
+    """A seek into a proxied file starts at the offset's share of its duration."""
+    response = MagicMock(headers={"Content-Range": content_range} if content_range else {})
+    assert _range_start_position(response, 180) == expected
 
 
 @pytest.mark.parametrize(("current_item_id", "prepared"), [("item-1", True), ("item-2", False)])
