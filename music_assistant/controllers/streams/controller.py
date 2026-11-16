@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
@@ -21,7 +20,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from aiofiles.os import wrap
-from aiohttp import ClientResponse, ClientTimeout, web
+from aiohttp import ClientTimeout, web
 from mashumaro import DataClassDictMixin
 from music_assistant_models.audio_processing import AudioQueueProcessing
 from music_assistant_models.auth import Scope
@@ -274,24 +273,6 @@ async def _skip_leading_bytes(
             skip_bytes -= dropped
             if chunk := raw_chunk[dropped:]:
                 yield chunk
-
-
-def _range_start_position(source_response: ClientResponse, duration: float) -> float:
-    """
-    Return the position, in seconds, at which a partial response of a file starts.
-
-    The renderer picks the byte offset of a seek in proportion to the file, so the
-    offset's share of the whole file gives the position it seeks to.
-
-    :param source_response: The response for (a range of) the file.
-    :param duration: Duration of the whole file.
-    """
-    content_range = source_response.headers.get("Content-Range") or ""
-    if match := re.fullmatch(r"bytes (\d+)-\d+/(\d+)", content_range.strip()):
-        start, total = int(match.group(1)), int(match.group(2))
-        if total > 0:
-            return start / total * duration
-    return 0.0
 
 
 def _get_publish_addresses(
@@ -2581,19 +2562,15 @@ class StreamsController(CoreController):
                 player_ids={player.protocol_id, *player.group_members},
             )
             # the original file bypasses the audio pipeline, whose stream of an item
-            # prepares the next one before the end: do the same from the timeline, so a
-            # next item from a realtime source has its audio ready when it is fetched
-            self.mass.call_later(
-                max(
-                    stream_duration
-                    - max(elapsed_time, _range_start_position(source_response, stream_duration))
-                    - PROXIED_NEXT_PREPARE_LEAD,
-                    0,
+            # prepares the next one before the end: do the same from the playback
+            # position (a renderer seeks within what it already fetched without asking
+            # again), so a next item from a realtime source is ready when it is fetched
+            self.mass.create_task(
+                self._prepare_next_after_proxied_item(
+                    queue.queue_id, queue_item.queue_item_id, stream_duration
                 ),
-                self._prepare_next_after_proxied_item,
-                queue.queue_id,
-                queue_item.queue_item_id,
                 task_id=f"prepare_next_after_proxied_item_{queue.queue_id}",
+                abort_existing=True,
             )
 
             self.logger.debug(
@@ -2619,20 +2596,31 @@ class StreamsController(CoreController):
                 )
             return response
 
-    def _prepare_next_after_proxied_item(self, queue_id: str, queue_item_id: str) -> None:
+    async def _prepare_next_after_proxied_item(
+        self, queue_id: str, queue_item_id: str, duration: float
+    ) -> None:
         """
-        Prepare the audio of the item after a proxied original file nearing its end.
+        Prepare the audio of the next item once a proxied original file nears its end.
+
+        Gives up when playback moves on to another item, which prepares its own successor.
 
         :param queue_id: The queue the proxied item belongs to.
         :param queue_item_id: The proxied item.
+        :param duration: Duration of the proxied item.
         """
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None or queue.current_item is None:
-            return
-        if queue.current_item.queue_item_id != queue_item_id:
-            # playback moved on to another item, which prepares its own successor
-            return
-        self.mass.player_queues.prepare_next_audio_buffer(queue_id, queue_item_id)
+        while True:
+            queue = self.mass.player_queues.get(queue_id)
+            if (
+                queue is None
+                or queue.current_item is None
+                or queue.current_item.queue_item_id != queue_item_id
+            ):
+                return
+            remaining = duration - queue.corrected_elapsed_time
+            if remaining <= PROXIED_NEXT_PREPARE_LEAD:
+                self.mass.player_queues.prepare_next_audio_buffer(queue_id, queue_item_id)
+                return
+            await asyncio.sleep(min(remaining - PROXIED_NEXT_PREPARE_LEAD, 2))
 
     def _resolve_audio_source_request(
         self, request: web.Request

@@ -55,7 +55,7 @@ from music_assistant.controllers.streams.audio_processing import (
     get_normalization_details,
 )
 from music_assistant.controllers.streams.constants import output_pacing_args
-from music_assistant.controllers.streams.controller import StreamsController, _range_start_position
+from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.helpers.dsp import ComplexFilter
 from music_assistant.helpers.upnp import TIME_SEEK_HEADER
 from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
@@ -1484,36 +1484,29 @@ async def test_byte_stable_passthrough_forwards_exact_source_length(
         streamdetails=queue_item.streamdetails,
         player_ids={player.protocol_id, "protocol-1", "protocol-2"},
     )
-    # the next item is prepared a minute before the end of the 180s file
-    controller.mass.call_later.assert_called_once_with(
-        120,
-        controller._prepare_next_after_proxied_item,
-        "queue-1",
-        "item-1",
-        task_id="prepare_next_after_proxied_item_queue-1",
+    # the next item is prepared from the playback position of the proxied file
+    controller.mass.create_task.assert_called_once()
+    assert controller.mass.create_task.call_args.kwargs["task_id"] == (
+        "prepare_next_after_proxied_item_queue-1"
     )
+    controller.mass.create_task.call_args.args[0].close()
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("content_range", "expected"),
-    [("bytes 750-999/1000", 135.0), ("", 0.0), ("bytes */1000", 0.0)],
+    ("current_item_id", "elapsed", "prepared"),
+    [("item-1", 125.0, True), ("item-2", 125.0, False)],
 )
-def test_range_start_position_follows_the_byte_offset(content_range: str, expected: float) -> None:
-    """A seek into a proxied file starts at the offset's share of its duration."""
-    response = MagicMock(headers={"Content-Range": content_range} if content_range else {})
-    assert _range_start_position(response, 180) == expected
-
-
-@pytest.mark.parametrize(("current_item_id", "prepared"), [("item-1", True), ("item-2", False)])
-def test_next_item_after_a_proxied_file_is_prepared_only_while_it_plays(
-    monkeypatch: pytest.MonkeyPatch, current_item_id: str, prepared: bool
+async def test_next_item_after_a_proxied_file_is_prepared_near_its_end(
+    monkeypatch: pytest.MonkeyPatch, current_item_id: str, elapsed: float, prepared: bool
 ) -> None:
-    """The preparation follows the proxied item, not an item playback moved on to."""
+    """The next item is prepared a minute before the end, only while the file plays."""
     controller, _request, _group_members = _native_stream_handler_context(monkeypatch)
     queue = controller.mass.player_queues.get.return_value
     queue.current_item.queue_item_id = current_item_id
+    queue.corrected_elapsed_time = elapsed
 
-    controller._prepare_next_after_proxied_item("queue-1", "item-1")
+    await controller._prepare_next_after_proxied_item("queue-1", "item-1", 180)
 
     if prepared:
         controller.mass.player_queues.prepare_next_audio_buffer.assert_called_once_with(
@@ -1521,6 +1514,32 @@ def test_next_item_after_a_proxied_file_is_prepared_only_while_it_plays(
         )
     else:
         controller.mass.player_queues.prepare_next_audio_buffer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_next_item_preparation_waits_for_the_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A position further from the end keeps waiting, following a seek towards the end."""
+    controller, _request, _group_members = _native_stream_handler_context(monkeypatch)
+    queue = controller.mass.player_queues.get.return_value
+    queue.current_item.queue_item_id = "item-1"
+    queue.corrected_elapsed_time = 10.0
+    sleeps: list[float] = []
+
+    async def _sleep(delay: float) -> None:
+        sleeps.append(delay)
+        # the user seeks close to the end
+        queue.corrected_elapsed_time = 150.0
+
+    monkeypatch.setattr("music_assistant.controllers.streams.controller.asyncio.sleep", _sleep)
+
+    await controller._prepare_next_after_proxied_item("queue-1", "item-1", 180)
+
+    assert sleeps == [2]
+    controller.mass.player_queues.prepare_next_audio_buffer.assert_called_once_with(
+        "queue-1", "item-1"
+    )
 
 
 @pytest.mark.asyncio
